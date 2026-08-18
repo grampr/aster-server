@@ -9,11 +9,15 @@ import (
 )
 
 var (
-	ErrEmailAlreadyRegistered = errors.New("email already registered")
-	ErrInvalidCredentials     = errors.New("invalid credentials")
-	ErrInvalidRefreshToken    = errors.New("invalid refresh token")
-	ErrUnauthorized           = errors.New("unauthorized")
-	errIdentityNotFound       = errors.New("identity not found")
+	ErrEmailAlreadyRegistered    = errors.New("email already registered")
+	ErrInvalidCredentials        = errors.New("invalid credentials")
+	ErrInvalidRefreshToken       = errors.New("invalid refresh token")
+	ErrInvalidAuthorizationGrant = errors.New("invalid authorization grant")
+	ErrAccountLinkRequired       = errors.New("account link required")
+	ErrGoogleUnavailable         = errors.New("google authentication unavailable")
+	ErrInvalidOAuthCallback      = errors.New("invalid oauth callback")
+	ErrUnauthorized              = errors.New("unauthorized")
+	errIdentityNotFound          = errors.New("identity not found")
 )
 
 const (
@@ -67,6 +71,51 @@ type RotatedSession struct {
 	RotatedAt        time.Time
 }
 
+type NewGoogleLoginAttempt struct {
+	ID                   uuid.UUID
+	OAuthStateHash       []byte
+	ClientState          string
+	CodeChallenge        string
+	RedirectURI          string
+	Nonce                string
+	ProviderCodeVerifier string
+	ExpiresAt            time.Time
+	CreatedAt            time.Time
+}
+
+type GoogleLoginAttempt struct {
+	ID                   uuid.UUID
+	ClientState          string
+	CodeChallenge        string
+	RedirectURI          string
+	Nonce                string
+	ProviderCodeVerifier string
+}
+
+type GoogleIdentity struct {
+	Subject       string
+	Email         string
+	EmailVerified bool
+	DisplayName   string
+	AvatarURL     *string
+}
+
+type NewGoogleExchangeGrant struct {
+	ID        uuid.UUID
+	AttemptID uuid.UUID
+	CodeHash  []byte
+	Identity  GoogleIdentity
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+type GoogleSessionExchange struct {
+	CodeHash      []byte
+	CodeChallenge string
+	Session       NewSession
+	ExchangedAt   time.Time
+}
+
 type Store interface {
 	CreatePasswordUser(context.Context, NewPasswordUser) error
 	FindPasswordIdentity(context.Context, string) (PasswordIdentity, error)
@@ -74,4 +123,9 @@ type Store interface {
 	RotateSession(context.Context, []byte, RotatedSession) (uuid.UUID, error)
 	RevokeSession(context.Context, []byte, []byte, time.Time) error
 	FindUserByAccessToken(context.Context, []byte, time.Time) (User, error)
+	CreateGoogleLoginAttempt(context.Context, NewGoogleLoginAttempt) error
+	ConsumeGoogleLoginAttempt(context.Context, []byte, time.Time) (GoogleLoginAttempt, error)
+	DeleteGoogleLoginAttempt(context.Context, uuid.UUID) error
+	CreateGoogleExchangeGrant(context.Context, NewGoogleExchangeGrant) error
+	ExchangeGoogleGrant(context.Context, GoogleSessionExchange) error
 }

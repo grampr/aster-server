@@ -32,7 +32,6 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-
 	rootContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startupContext, cancelStartup := context.WithTimeout(rootContext, 10*time.Second)
@@ -59,6 +58,17 @@ func run(logger *slog.Logger) error {
 	)
 	if err != nil {
 		return err
+	}
+	if config.GoogleEnabled() {
+		googleProvider, err := auth.NewGoogleOIDCProvider(
+			config.GoogleClientID, config.GoogleClientSecret, config.GoogleCallbackURL,
+		)
+		if err != nil {
+			return err
+		}
+		if err := authService.EnableGoogle(googleProvider, config.GoogleAttemptTTL, config.GoogleExchangeTTL); err != nil {
+			return err
+		}
 	}
 
 	httpServer := &http.Server{

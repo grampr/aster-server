@@ -19,6 +19,18 @@ func (TokenIssuer) NewRefreshToken() (string, []byte, error) {
 	return newOpaqueToken("aster_rt_")
 }
 
+func (TokenIssuer) NewExchangeCode() (string, []byte, error) {
+	return newOpaqueToken("aster_ec_")
+}
+
+func NewRandomValue() (string, error) {
+	random := make([]byte, tokenEntropyBytes)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("generate random value: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(random), nil
+}
+
 func HashToken(token string) []byte {
 	hash := sha256.Sum256([]byte(token))
 	return hash[:]

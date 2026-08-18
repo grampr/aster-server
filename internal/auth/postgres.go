@@ -201,6 +201,201 @@ func (s *PostgresStore) FindUserByAccessToken(ctx context.Context, accessHash []
 	return user, nil
 }
 
+func (s *PostgresStore) CreateGoogleLoginAttempt(ctx context.Context, input NewGoogleLoginAttempt) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM google_login_attempts WHERE expires_at <= $1`, input.CreatedAt); err != nil {
+		return fmt.Errorf("delete expired google login attempts: %w", err)
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO google_login_attempts (
+			id, oauth_state_hash, client_state, code_challenge, redirect_uri,
+			nonce, provider_code_verifier, expires_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		input.ID, input.OAuthStateHash, input.ClientState, input.CodeChallenge, input.RedirectURI,
+		input.Nonce, input.ProviderCodeVerifier, input.ExpiresAt, input.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert google login attempt: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteGoogleLoginAttempt(ctx context.Context, attemptID uuid.UUID) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM google_login_attempts WHERE id = $1`, attemptID); err != nil {
+		return fmt.Errorf("delete google login attempt: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ConsumeGoogleLoginAttempt(ctx context.Context, stateHash []byte, now time.Time) (GoogleLoginAttempt, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return GoogleLoginAttempt{}, fmt.Errorf("begin google callback transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var attempt GoogleLoginAttempt
+	err = tx.QueryRow(ctx, `
+		SELECT id, client_state, code_challenge, redirect_uri, nonce, provider_code_verifier
+		FROM google_login_attempts
+		WHERE oauth_state_hash = $1 AND consumed_at IS NULL AND expires_at > $2
+		FOR UPDATE`, stateHash, now,
+	).Scan(
+		&attempt.ID, &attempt.ClientState, &attempt.CodeChallenge, &attempt.RedirectURI,
+		&attempt.Nonce, &attempt.ProviderCodeVerifier,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return GoogleLoginAttempt{}, ErrInvalidOAuthCallback
+	}
+	if err != nil {
+		return GoogleLoginAttempt{}, fmt.Errorf("lock google login attempt: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE google_login_attempts SET consumed_at = $2 WHERE id = $1`, attempt.ID, now); err != nil {
+		return GoogleLoginAttempt{}, fmt.Errorf("consume google login attempt: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return GoogleLoginAttempt{}, fmt.Errorf("commit google callback: %w", err)
+	}
+	return attempt, nil
+}
+
+func (s *PostgresStore) CreateGoogleExchangeGrant(ctx context.Context, input NewGoogleExchangeGrant) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO google_exchange_grants (
+			id, attempt_id, code_hash, provider_subject, email, normalized_email,
+			email_verified, display_name, avatar_url, expires_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		input.ID, input.AttemptID, input.CodeHash, input.Identity.Subject, input.Identity.Email,
+		input.Identity.Email, input.Identity.EmailVerified, input.Identity.DisplayName,
+		input.Identity.AvatarURL, input.ExpiresAt, input.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert google exchange grant: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ExchangeGoogleGrant(ctx context.Context, input GoogleSessionExchange) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin google exchange transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var grantID, attemptID uuid.UUID
+	var consumedAt *time.Time
+	var expiresAt time.Time
+	var storedChallenge, subject, email, normalizedEmail, displayName string
+	var emailVerified bool
+	var avatarURL *string
+	err = tx.QueryRow(ctx, `
+		SELECT g.id, g.attempt_id, g.consumed_at, g.expires_at, a.code_challenge,
+		       g.provider_subject, g.email, g.normalized_email, g.email_verified,
+		       g.display_name, g.avatar_url
+		FROM google_exchange_grants g
+		JOIN google_login_attempts a ON a.id = g.attempt_id
+		WHERE g.code_hash = $1
+		FOR UPDATE OF g`, input.CodeHash,
+	).Scan(
+		&grantID, &attemptID, &consumedAt, &expiresAt, &storedChallenge, &subject, &email,
+		&normalizedEmail, &emailVerified, &displayName, &avatarURL,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrInvalidAuthorizationGrant
+	}
+	if err != nil {
+		return fmt.Errorf("lock google exchange grant: %w", err)
+	}
+	if consumedAt != nil {
+		return ErrInvalidAuthorizationGrant
+	}
+	if _, err := tx.Exec(ctx, `UPDATE google_exchange_grants SET consumed_at = $2 WHERE id = $1`, grantID, input.ExchangedAt); err != nil {
+		return fmt.Errorf("consume google exchange grant: %w", err)
+	}
+	if !input.ExchangedAt.Before(expiresAt) || storedChallenge != input.CodeChallenge || !emailVerified {
+		if err := deleteGoogleGrantAndAttempt(ctx, tx, grantID, attemptID); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit rejected google exchange: %w", err)
+		}
+		return ErrInvalidAuthorizationGrant
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "google-subject:"+subject); err != nil {
+		return fmt.Errorf("lock google subject: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "google-email:"+normalizedEmail); err != nil {
+		return fmt.Errorf("lock google email: %w", err)
+	}
+
+	var userID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT user_id FROM auth_identities WHERE provider = $1 AND provider_subject = $2`,
+		ProviderGoogle, subject,
+	).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var existingUserID uuid.UUID
+		emailErr := tx.QueryRow(ctx, `SELECT id FROM users WHERE normalized_email = $1`, normalizedEmail).Scan(&existingUserID)
+		if emailErr == nil {
+			if err := deleteGoogleGrantAndAttempt(ctx, tx, grantID, attemptID); err != nil {
+				return err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return fmt.Errorf("commit account link requirement: %w", err)
+			}
+			return ErrAccountLinkRequired
+		}
+		if !errors.Is(emailErr, pgx.ErrNoRows) {
+			return fmt.Errorf("check google email ownership: %w", emailErr)
+		}
+		userID, err = newUUIDv7()
+		if err != nil {
+			return err
+		}
+		identityID, err := newUUIDv7()
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO users (id, email, normalized_email, email_verified, display_name, avatar_url, created_at, updated_at)
+			VALUES ($1, $2, $3, TRUE, $4, $5, $6, $6)`,
+			userID, email, normalizedEmail, displayName, avatarURL, input.ExchangedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("insert google user: %w", err)
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO auth_identities (id, user_id, provider, provider_subject, created_at)
+			VALUES ($1, $2, $3, $4, $5)`,
+			identityID, userID, ProviderGoogle, subject, input.ExchangedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("insert google identity: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("find google identity: %w", err)
+	}
+	input.Session.UserID = userID
+	if err := insertSession(ctx, tx, input.Session); err != nil {
+		return err
+	}
+	if err := deleteGoogleGrantAndAttempt(ctx, tx, grantID, attemptID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit google exchange: %w", err)
+	}
+	return nil
+}
+
+func deleteGoogleGrantAndAttempt(ctx context.Context, tx pgx.Tx, grantID, attemptID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM google_exchange_grants WHERE id = $1`, grantID); err != nil {
+		return fmt.Errorf("delete google exchange grant: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM google_login_attempts WHERE id = $1`, attemptID); err != nil {
+		return fmt.Errorf("delete google login attempt: %w", err)
+	}
+	return nil
+}
+
 func insertSession(ctx context.Context, tx pgx.Tx, session NewSession) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO sessions (
