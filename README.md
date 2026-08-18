@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在は Password 認証と Aster Session の最小実装を提供します。
+現在は Password、Google OpenID Connect、Provider非依存のAster Sessionを実装しています。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -16,6 +16,9 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET` | `/api/v1/health` | HTTP Server の稼働状態を返す |
 | `POST` | `/api/v1/auth/password/register` | Password Account と Session を作成する |
 | `POST` | `/api/v1/auth/password/login` | Password で Session を作成する |
+| `POST` | `/api/v1/auth/google/authorize` | PKCE付きGoogle Loginを開始する |
+| `GET` | `/api/v1/auth/google/callback` | Googleの応答を検証してDesktopへRedirectする |
+| `POST` | `/api/v1/auth/google/exchange` | 一度限りのExchange CodeをSessionへ交換する |
 | `POST` | `/api/v1/auth/token/refresh` | Refresh Token を交換する |
 | `POST` | `/api/v1/auth/logout` | 現在の Session を破棄する |
 | `GET` | `/api/v1/users/@me` | 認証済み User 自身を返す |
@@ -36,6 +39,11 @@ Refresh Token は使用するたびに交換します。
 
 Password は Argon2id の PHC 形式で保存します。
 既定値は OWASP の最低推奨値に対応する Memory 19 MiB、Iteration 2、Parallelism 1 です。
+
+Google Loginでは、ServerがOAuth State、OpenID Connect Nonce、Issuer、Audience、署名を検証します。
+Google向けAuthorization CodeにもServer内部のPKCE S256を使用し、DesktopのPKCEはAster Exchange CodeへBindingします。
+GoogleのAuthorization Code、ID Token、Access Token、Refresh TokenはDesktopへ返しません。
+Login試行とExchange CodeはPostgreSQLへHashまたは短命データとして保存し、一度だけ消費します。
 
 ## ローカル起動
 
@@ -71,6 +79,14 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_REFRESH_TOKEN_TTL` | `720h` | Refresh Token と Session の有効期間 |
 | `ASTER_SHUTDOWN_TIMEOUT` | `10s` | Graceful Shutdown の待機時間 |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
+| `ASTER_GOOGLE_CLIENT_ID` | なし | Google OAuth Client ID。Google認証を有効化する場合は必須 |
+| `ASTER_GOOGLE_CLIENT_SECRET` | なし | Google OAuth Client Secret。Google認証を有効化する場合は必須 |
+| `ASTER_GOOGLE_CALLBACK_URL` | なし | Google Consoleへ登録したServer Callback URL |
+| `ASTER_GOOGLE_ATTEMPT_TTL` | `5m` | Google Login試行の有効期間。最大10分 |
+| `ASTER_GOOGLE_EXCHANGE_TTL` | `2m` | Aster Exchange Codeの有効期間。最大10分 |
+
+Google認証の3つの必須設定はまとめて指定します。
+ProductionのCallback URLにはHTTPSが必要です。ローカル開発時だけ`http://localhost:8080/api/v1/auth/google/callback`を使用できます。
 
 ## 検証
 
@@ -89,7 +105,8 @@ make test-integration
 ## 現在の制約
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
-- Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
+- Email Verification、Password Reset、明示的なAccount Link／Unlinkは未実装です。
+- Googleの確認済みEmailが既存Accountと一致しても自動Linkせず、`ACCOUNT_LINK_REQUIRED`を返します。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。
 

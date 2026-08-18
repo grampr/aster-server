@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,9 @@ func New(authService *auth.Service, logger *slog.Logger, version string) http.Ha
 	mux.HandleFunc("GET /api/v1/health", server.health)
 	mux.HandleFunc("POST /api/v1/auth/password/register", server.register)
 	mux.HandleFunc("POST /api/v1/auth/password/login", server.login)
+	mux.HandleFunc("POST /api/v1/auth/google/authorize", server.googleAuthorize)
+	mux.HandleFunc("GET /api/v1/auth/google/callback", server.googleCallback)
+	mux.HandleFunc("POST /api/v1/auth/google/exchange", server.googleExchange)
 	mux.HandleFunc("POST /api/v1/auth/token/refresh", server.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", server.logout)
 	mux.HandleFunc("GET /api/v1/users/@me", server.currentUser)
@@ -67,6 +71,7 @@ func (s *Server) register(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	s.audit(request, "password_register", "succeeded", "session_id", tokens.SessionID)
+	setNoStore(writer.Header())
 	writeJSON(writer, http.StatusCreated, tokenResponse(tokens))
 }
 
@@ -92,6 +97,87 @@ func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
 	}
 	s.loginLimiter.Reset(loginKey)
 	s.audit(request, "password_login", "succeeded", "session_id", tokens.SessionID)
+	setNoStore(writer.Header())
+	writeJSON(writer, http.StatusOK, tokenResponse(tokens))
+}
+
+func (s *Server) googleAuthorize(writer http.ResponseWriter, request *http.Request) {
+	if !s.allowRequest(writer, request, "auth_google_authorize") {
+		return
+	}
+	var body protocolgo.GoogleAuthorizationRequest
+	if err := decodeJSON(writer, request, &body); err != nil {
+		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "Request body is invalid", err)
+		return
+	}
+	if body.CodeChallengeMethod != protocolgo.S256 {
+		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "code_challenge_method must be S256", nil)
+		return
+	}
+	authorization, err := s.auth.BeginGoogleAuthorization(request.Context(), auth.GoogleAuthorizationInput{
+		RedirectURI: string(body.RedirectUri), CodeChallenge: string(body.CodeChallenge),
+		ClientState: string(body.ClientState),
+	})
+	if err != nil {
+		s.handleAuthError(writer, request, err)
+		return
+	}
+	s.audit(request, "google_authorization", "started")
+	setNoStore(writer.Header())
+	writeJSON(writer, http.StatusOK, protocolgo.GoogleAuthorizationResponse{
+		AuthorizationUrl: authorization.URL, ExpiresIn: int(authorization.ExpiresIn / time.Second),
+	})
+}
+
+func (s *Server) googleCallback(writer http.ResponseWriter, request *http.Request) {
+	if !s.allowRequest(writer, request, "auth_google_callback") {
+		return
+	}
+	query := request.URL.Query()
+	result, err := s.auth.CompleteGoogleAuthorization(request.Context(), auth.GoogleCallbackInput{
+		Code: query.Get("code"), State: query.Get("state"), Error: query.Get("error"),
+	})
+	if result.RedirectURI != "" {
+		if err != nil {
+			s.logger.Error("google callback failed", "request_id", requestIDFromContext(request), "error", err)
+		}
+		location, buildErr := googleCallbackLocation(result)
+		if buildErr != nil {
+			s.writeError(writer, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", buildErr)
+			return
+		}
+		outcome := "succeeded"
+		if result.ErrorCode != "" {
+			outcome = "rejected"
+		}
+		s.audit(request, "google_callback", outcome)
+		writer.Header().Set("Cache-Control", "no-store")
+		http.Redirect(writer, request, location, http.StatusFound)
+		return
+	}
+	if err != nil {
+		s.handleAuthError(writer, request, err)
+		return
+	}
+	s.writeError(writer, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", errors.New("google callback produced no redirect"))
+}
+
+func (s *Server) googleExchange(writer http.ResponseWriter, request *http.Request) {
+	if !s.allowRequest(writer, request, "auth_google_exchange") {
+		return
+	}
+	var body protocolgo.GoogleExchangeRequest
+	if err := decodeJSON(writer, request, &body); err != nil {
+		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "Request body is invalid", err)
+		return
+	}
+	tokens, err := s.auth.ExchangeGoogleAuthorization(request.Context(), string(body.ExchangeCode), string(body.CodeVerifier))
+	if err != nil {
+		s.handleAuthError(writer, request, err)
+		return
+	}
+	s.audit(request, "google_exchange", "succeeded", "session_id", tokens.SessionID)
+	setNoStore(writer.Header())
 	writeJSON(writer, http.StatusOK, tokenResponse(tokens))
 }
 
@@ -110,6 +196,7 @@ func (s *Server) refresh(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	s.audit(request, "session_refresh", "succeeded", "session_id", tokens.SessionID)
+	setNoStore(writer.Header())
 	writeJSON(writer, http.StatusOK, tokenResponse(tokens))
 }
 
@@ -186,6 +273,14 @@ func (s *Server) handleAuthError(writer http.ResponseWriter, request *http.Reque
 		s.writeError(writer, request, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Email or password is incorrect", nil)
 	case errors.Is(err, auth.ErrInvalidRefreshToken):
 		s.writeError(writer, request, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "Refresh token is invalid or expired", nil)
+	case errors.Is(err, auth.ErrInvalidAuthorizationGrant):
+		s.writeError(writer, request, http.StatusBadRequest, "INVALID_AUTHORIZATION_GRANT", "Authorization grant is invalid or expired", nil)
+	case errors.Is(err, auth.ErrAccountLinkRequired):
+		s.writeError(writer, request, http.StatusConflict, "ACCOUNT_LINK_REQUIRED", "Sign in to the existing account before linking Google", nil)
+	case errors.Is(err, auth.ErrInvalidOAuthCallback):
+		s.writeError(writer, request, http.StatusBadRequest, "INVALID_OAUTH_CALLBACK", "OAuth callback is invalid or expired", nil)
+	case errors.Is(err, auth.ErrGoogleUnavailable):
+		s.writeError(writer, request, http.StatusServiceUnavailable, "GOOGLE_AUTHENTICATION_UNAVAILABLE", "Google authentication is unavailable", nil)
 	case errors.Is(err, auth.ErrUnauthorized):
 		s.writeError(writer, request, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication is required", nil)
 	default:
@@ -262,6 +357,29 @@ func writeJSON(writer http.ResponseWriter, status int, body any) {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(body)
+}
+
+func setNoStore(header http.Header) {
+	header.Set("Cache-Control", "no-store")
+	header.Set("Pragma", "no-cache")
+}
+
+func googleCallbackLocation(result auth.GoogleCallbackResult) (string, error) {
+	location, err := url.Parse(result.RedirectURI)
+	if err != nil || location.Scheme != "aster" || location.Host != "auth" || location.Path != "/callback" {
+		return "", errors.New("google callback redirect URI is not allowed")
+	}
+	query := location.Query()
+	query.Set("state", result.ClientState)
+	if result.ExchangeCode != "" && result.ErrorCode == "" {
+		query.Set("code", result.ExchangeCode)
+	} else if result.ErrorCode != "" && result.ExchangeCode == "" {
+		query.Set("error", result.ErrorCode)
+	} else {
+		return "", errors.New("google callback result must contain either code or error")
+	}
+	location.RawQuery = query.Encode()
+	return location.String(), nil
 }
 
 func bearerToken(request *http.Request) (string, error) {
