@@ -1,0 +1,34 @@
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: aster
+      POSTGRES_PASSWORD: aster
+      POSTGRES_DB: aster
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aster -d aster"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    ports:
+      - "5432:5432"
+    volumes:
+      - aster-postgres:/var/lib/postgresql/data
+      - ./init-test-db.sql:/docker-entrypoint-initdb.d/001-test-db.sql:ro
+
+  server:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      ASTER_HTTP_ADDR: :8080
+      ASTER_DATABASE_URL: postgres://aster:aster@database:5432/aster?sslmode=disable
+      ASTER_AUTO_MIGRATE: "true"
+    ports:
+      - "8080:8080"
+
+volumes:
+  aster-postgres:
