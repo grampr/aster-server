@@ -17,6 +17,7 @@ import (
 	protocolgo "github.com/grampr/Aster-protocol/packages/protocol-go/generated"
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
+	"github.com/grampr/aster-server/internal/gateway"
 )
 
 const maxRequestBodyBytes = 64 << 10
@@ -24,19 +25,23 @@ const maxRequestBodyBytes = 64 << 10
 type Server struct {
 	auth           *auth.Service
 	chat           *chat.Service
+	gateway        *gateway.Service
 	logger         *slog.Logger
 	version        string
 	requestLimiter *fixedWindowLimiter
 	loginLimiter   *fixedWindowLimiter
 }
 
-func New(authService *auth.Service, chatService *chat.Service, logger *slog.Logger, version string) http.Handler {
+func New(authService *auth.Service, chatService *chat.Service, gatewayService *gateway.Service, logger *slog.Logger, version string) http.Handler {
 	server := &Server{
-		auth: authService, chat: chatService, logger: logger, version: version,
+		auth: authService, chat: chatService, gateway: gatewayService, logger: logger, version: version,
 		requestLimiter: newFixedWindowLimiter(60, time.Minute),
 		loginLimiter:   newFixedWindowLimiter(5, 15*time.Minute),
 	}
 	mux := http.NewServeMux()
+	if gatewayService != nil {
+		mux.Handle("GET /gateway/v1", gatewayService)
+	}
 	mux.HandleFunc("GET /api/v1/health", server.health)
 	mux.HandleFunc("POST /api/v1/auth/password/register", server.register)
 	mux.HandleFunc("POST /api/v1/auth/password/login", server.login)

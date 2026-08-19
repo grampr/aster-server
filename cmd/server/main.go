@@ -13,6 +13,7 @@ import (
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
 	"github.com/grampr/aster-server/internal/config"
+	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
 	"github.com/grampr/aster-server/migrations"
@@ -65,10 +66,18 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	gatewayService, err := gateway.New(authService, gateway.Config{
+		URL: config.GatewayURL, HeartbeatInterval: config.GatewayHeartbeat,
+		IdentifyTimeout: config.GatewayIdentifyTimeout, SessionRetention: config.GatewaySessionRetention,
+		EventBufferSize: 1000, AllowedOrigins: config.GatewayAllowedOrigins,
+	}, logger)
+	if err != nil {
+		return err
+	}
 
 	httpServer := &http.Server{
 		Addr:              config.HTTPAddress,
-		Handler:           httpapi.New(authService, chatService, logger, version),
+		Handler:           httpapi.New(authService, chatService, gatewayService, logger, version),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

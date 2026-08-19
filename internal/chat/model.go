@@ -122,4 +122,5 @@ type Store interface {
 	GetMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) (Message, error)
 	UpdateMessage(ctx context.Context, authorID, channelID, messageID uuid.UUID, content string, editedAt time.Time) (Message, error)
 	DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error
+	ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
 }

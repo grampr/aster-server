@@ -2,18 +2,23 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	protocolgo "github.com/grampr/Aster-protocol/packages/protocol-go/generated"
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
+	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
 	"github.com/grampr/aster-server/migrations"
@@ -52,11 +57,35 @@ func TestChatLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(authService, chatService, slog.New(slog.NewTextHandler(io.Discard, nil)), "test"))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gatewayService, err := gateway.New(authService, gateway.Config{
+		URL: "ws://gateway.example/gateway/v1", HeartbeatInterval: time.Second,
+		IdentifyTimeout: time.Second, SessionRetention: time.Minute, EventBufferSize: 16,
+	}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.New(authService, chatService, gatewayService, logger, "test"))
 	defer server.Close()
 
 	aliceSession := registerTestUser(t, server, "alice@example.com", "Alice")
 	bobSession := registerTestUser(t, server, "bob@example.com", "Bob")
+	gatewayConnection, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/gateway/v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gatewayConnection.Close()
+	if message := readGatewayMessage(t, gatewayConnection); message.Op != 10 {
+		t.Fatalf("expected HELLO, got %+v", message)
+	}
+	if err := gatewayConnection.WriteJSON(map[string]any{
+		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if message := readGatewayMessage(t, gatewayConnection); message.Type != "READY" {
+		t.Fatalf("expected READY, got %+v", message)
+	}
 	alice := requestJSON[protocolgo.UserSelf](t, server.Client(), http.MethodGet, server.URL+"/api/v1/users/@me", nil, aliceSession.AccessToken, http.StatusOK)
 	bob := requestJSON[protocolgo.UserSelf](t, server.Client(), http.MethodGet, server.URL+"/api/v1/users/@me", nil, bobSession.AccessToken, http.StatusOK)
 
@@ -90,12 +119,18 @@ func TestChatLifecycle(t *testing.T) {
 	first := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
 		Content: "1つ目",
 	}, bobSession.AccessToken, http.StatusCreated)
+	firstEvent := readGatewayMessage(t, gatewayConnection)
+	if firstEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, firstEvent) != first.Id {
+		t.Fatalf("unexpected first message event: %+v", firstEvent)
+	}
 	second := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
 		Content: "2つ目",
 	}, bobSession.AccessToken, http.StatusCreated)
+	_ = readGatewayMessage(t, gatewayConnection)
 	third := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
 		Content: "3つ目",
 	}, bobSession.AccessToken, http.StatusCreated)
+	_ = readGatewayMessage(t, gatewayConnection)
 	if first.Author.Id != bob.Id || second.Author.DisplayName != "Bob" {
 		t.Fatalf("message author snapshot is incorrect: %+v", first.Author)
 	}
@@ -119,6 +154,9 @@ func TestChatLifecycle(t *testing.T) {
 	if edited.EditedAt == nil || edited.Content != "編集済み" {
 		t.Fatalf("message was not edited: %+v", edited)
 	}
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "MESSAGE_UPDATE" || gatewayMessageID(t, event) != first.Id {
+		t.Fatalf("unexpected message update event: %+v", event)
+	}
 
 	cleared := requestJSON[protocolgo.Guild](t, server.Client(), http.MethodPatch, server.URL+"/api/v1/guilds/"+guild.Id.String(), map[string]any{
 		"description": nil,
@@ -127,6 +165,9 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("explicit null must clear description: %+v", cleared)
 	}
 	requestJSON[struct{}](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, aliceSession.AccessToken, http.StatusNoContent)
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "MESSAGE_DELETE" || gatewayMessageID(t, event) != second.Id {
+		t.Fatalf("unexpected message delete event: %+v", event)
+	}
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, bobSession.AccessToken, http.StatusNotFound)
 }
 
@@ -138,3 +179,30 @@ func registerTestUser(t *testing.T, server *httptest.Server, email, displayName 
 }
 
 func stringPointer(value string) *string { return &value }
+
+type integrationGatewayMessage struct {
+	Op   int             `json:"op"`
+	Type string          `json:"t"`
+	Data json.RawMessage `json:"d"`
+}
+
+func readGatewayMessage(t *testing.T, connection *websocket.Conn) integrationGatewayMessage {
+	t.Helper()
+	_ = connection.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var message integrationGatewayMessage
+	if err := connection.ReadJSON(&message); err != nil {
+		t.Fatal(err)
+	}
+	return message
+}
+
+func gatewayMessageID(t *testing.T, message integrationGatewayMessage) uuid.UUID {
+	t.Helper()
+	var data struct {
+		ID uuid.UUID `json:"id"`
+	}
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	return data.ID
+}

@@ -311,6 +311,10 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, channelID, messageI
 	return s.store.DeleteMessage(ctx, userID, channelID, messageID)
 }
 
+func (s *Service) ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+	return s.store.ListChannelMemberIDs(ctx, channelID)
+}
+
 func validateName(field, value string) (string, error) {
 	value = strings.TrimSpace(value)
 	length := utf8.RuneCountInString(value)

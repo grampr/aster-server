@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在は Password 認証、Aster Session、Guild・Channel・Messageの永続化を提供します。
+現在はPassword認証、Aster Session、Guild・Channel・Messageの永続化、Message EventのWebSocket配信を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -25,6 +25,7 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}` | Channelの取得、変更、削除 |
 | `GET, POST` | `/api/v1/channels/{channel_id}/messages` | Messageの一覧取得と投稿 |
 | `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}` | Messageの取得、編集、削除 |
+| `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
 
 一覧APIは不透明なCursorと`limit`を使用します。
 Guildは参加順、Channelは`position`順、Messageは新しい順で安定してPageを返します。
@@ -42,6 +43,24 @@ RoleとPermissionのProtocolが追加されるまで、権限は次の最小ル�
 
 存在しないResourceと、認証済みUserから参照できないResourceは、どちらも`404 NOT_FOUND`として返します。
 これにより、参加していないGuildやChannelの存在をAPIから推測できないようにします。
+
+## WebSocket Gateway
+
+Clientは`/gateway/v1`へ接続すると`HELLO`を受信し、Access TokenとIntentを含む`IDENTIFY`を送信します。
+認証に成功すると、ServerはGateway Session IDとResume URLを含む`READY`を返します。
+
+`GUILD_MESSAGES` Intentを購読したGuild MemberのSessionには、REST APIで確定した変更を次のEventとして配信します。
+
+- `MESSAGE_CREATE`
+- `MESSAGE_UPDATE`
+- `MESSAGE_DELETE`
+
+`MESSAGE_CONTENT` IntentがないSessionでは、作成・更新Eventの`content`を`null`にします。
+投稿元のSessionも配信対象に含まれるため、ClientはMessage IDでREST ResponseとEventを重複排除します。
+
+Dispatch EventのSequenceと直近EventはProcess Memoryへ保持します。
+一時切断後は`RESUME`で最後に処理したSequenceを送り、保持期間とBufferの範囲内なら未処理Eventを再配信します。
+HeartbeatごとにAccess Tokenを再検証し、期限切れまたはRotation済みTokenの接続を終了します。
 
 ## 認証データの境界
 
@@ -93,6 +112,11 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_ACCESS_TOKEN_TTL` | `15m` | Access Token の有効期間 |
 | `ASTER_REFRESH_TOKEN_TTL` | `720h` | Refresh Token と Session の有効期間 |
 | `ASTER_SHUTDOWN_TIMEOUT` | `10s` | Graceful Shutdown の待機時間 |
+| `ASTER_GATEWAY_URL` | `ws://localhost:8080/gateway/v1` | `READY`でClientへ返す公開Gateway URL |
+| `ASTER_GATEWAY_HEARTBEAT_INTERVAL` | `45s` | ClientがHeartbeatを送る間隔 |
+| `ASTER_GATEWAY_IDENTIFY_TIMEOUT` | `10s` | 接続後に`IDENTIFY`または`RESUME`を待つ時間 |
+| `ASTER_GATEWAY_SESSION_RETENTION` | `2m` | 切断したGateway SessionとEventを保持する時間 |
+| `ASTER_GATEWAY_ALLOWED_ORIGINS` | Local Vite/Tauri Origins | Cross-Origin WebSocketを許可するOriginのComma区切り一覧 |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
 
 ## 検証
@@ -114,7 +138,8 @@ make test-integration
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
 - Guildへの招待・参加API、Member一覧、Role、Permissionは未実装です。
-- Category、DM、Thread、添付ファイル、MessageのGateway通知は未実装です。
+- Category、DM、Thread、添付ファイルのAPIとGateway通知は未実装です。
+- Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。
 

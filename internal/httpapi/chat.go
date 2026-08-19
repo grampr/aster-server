@@ -2,16 +2,19 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	protocolgo "github.com/grampr/Aster-protocol/packages/protocol-go/generated"
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
+	"github.com/grampr/aster-server/internal/gateway"
 )
 
 func (s *Server) createGuild(writer http.ResponseWriter, request *http.Request) {
@@ -239,6 +242,7 @@ func (s *Server) createMessage(writer http.ResponseWriter, request *http.Request
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishMessage(request, "create", message)
 	writeJSON(writer, http.StatusCreated, messageResponse(message))
 }
 
@@ -296,6 +300,7 @@ func (s *Server) updateMessage(writer http.ResponseWriter, request *http.Request
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishMessage(request, "update", message)
 	writeJSON(writer, http.StatusOK, messageResponse(message))
 }
 
@@ -308,7 +313,45 @@ func (s *Server) deleteMessage(writer http.ResponseWriter, request *http.Request
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishMessageDelete(request, messageID, channelID)
 	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) publishMessage(request *http.Request, event string, message chat.Message) {
+	if s.gateway == nil {
+		return
+	}
+	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
+	defer cancel()
+	recipients, err := s.chat.ListChannelMemberIDs(publishContext, message.ChannelID)
+	if err != nil {
+		s.logger.Error("list gateway message recipients", "request_id", requestIDFromContext(request), "channel_id", message.ChannelID, "error", err)
+		return
+	}
+	payload := gateway.Message{
+		ID: message.ID, ChannelID: message.ChannelID, Content: message.Content,
+		Author:    gateway.UserSummary{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
+		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
+	}
+	if event == "create" {
+		s.gateway.PublishMessageCreate(recipients, payload)
+		return
+	}
+	s.gateway.PublishMessageUpdate(recipients, payload)
+}
+
+func (s *Server) publishMessageDelete(request *http.Request, messageID, channelID uuid.UUID) {
+	if s.gateway == nil {
+		return
+	}
+	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
+	defer cancel()
+	recipients, err := s.chat.ListChannelMemberIDs(publishContext, channelID)
+	if err != nil {
+		s.logger.Error("list gateway message recipients", "request_id", requestIDFromContext(request), "channel_id", channelID, "error", err)
+		return
+	}
+	s.gateway.PublishMessageDelete(recipients, messageID, channelID)
 }
 
 func (s *Server) chatUser(writer http.ResponseWriter, request *http.Request, bucket string) (auth.User, bool) {

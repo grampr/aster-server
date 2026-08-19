@@ -387,6 +387,31 @@ func (s *PostgresStore) DeleteMessage(ctx context.Context, userID, channelID, me
 	return nil
 }
 
+func (s *PostgresStore) ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT gm.user_id
+		FROM channels c
+		JOIN guild_members gm ON gm.guild_id = c.guild_id
+		WHERE c.id = $1 AND c.type = 'TEXT'
+		ORDER BY gm.user_id`, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("list channel member IDs: %w", err)
+	}
+	defer rows.Close()
+	memberIDs := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var memberID uuid.UUID
+		if err := rows.Scan(&memberID); err != nil {
+			return nil, fmt.Errorf("scan channel member ID: %w", err)
+		}
+		memberIDs = append(memberIDs, memberID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate channel member IDs: %w", err)
+	}
+	return memberIDs, nil
+}
+
 type rowScanner interface {
 	Scan(...any) error
 }
