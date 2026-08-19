@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoad(t *testing.T) {
 	t.Setenv("ASTER_DATABASE_URL", "postgres://example")
@@ -14,6 +17,25 @@ func TestLoad(t *testing.T) {
 	}
 	if config.HTTPAddress != ":8080" || !config.AutoMigrate {
 		t.Fatalf("unexpected config: %+v", config)
+	}
+	if config.GatewayURL != "ws://localhost:8080/gateway/v1" || config.GatewayHeartbeat != 45*time.Second {
+		t.Fatalf("unexpected gateway config: %+v", config)
+	}
+	if len(config.GatewayAllowedOrigins) != 4 {
+		t.Fatalf("unexpected gateway origins: %v", config.GatewayAllowedOrigins)
+	}
+}
+
+func TestLoadParsesGatewaySettings(t *testing.T) {
+	t.Setenv("ASTER_DATABASE_URL", "postgres://example")
+	t.Setenv("ASTER_GATEWAY_HEARTBEAT_INTERVAL", "30s")
+	t.Setenv("ASTER_GATEWAY_ALLOWED_ORIGINS", "https://aster.example, tauri://localhost")
+	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.GatewayHeartbeat != 30*time.Second || len(config.GatewayAllowedOrigins) != 2 {
+		t.Fatalf("unexpected gateway config: %+v", config)
 	}
 }
 

@@ -5,25 +5,36 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
-	HTTPAddress     string
-	DatabaseURL     string
-	AccessTokenTTL  time.Duration
-	RefreshTokenTTL time.Duration
-	ShutdownTimeout time.Duration
-	AutoMigrate     bool
+	HTTPAddress             string
+	DatabaseURL             string
+	AccessTokenTTL          time.Duration
+	RefreshTokenTTL         time.Duration
+	ShutdownTimeout         time.Duration
+	GatewayURL              string
+	GatewayHeartbeat        time.Duration
+	GatewayIdentifyTimeout  time.Duration
+	GatewaySessionRetention time.Duration
+	GatewayAllowedOrigins   []string
+	AutoMigrate             bool
 }
 
 func Load() (Config, error) {
 	config := Config{
-		HTTPAddress:     envOrDefault("ASTER_HTTP_ADDR", ":8080"),
-		DatabaseURL:     os.Getenv("ASTER_DATABASE_URL"),
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 30 * 24 * time.Hour,
-		ShutdownTimeout: 10 * time.Second,
+		HTTPAddress:             envOrDefault("ASTER_HTTP_ADDR", ":8080"),
+		DatabaseURL:             os.Getenv("ASTER_DATABASE_URL"),
+		AccessTokenTTL:          15 * time.Minute,
+		RefreshTokenTTL:         30 * 24 * time.Hour,
+		ShutdownTimeout:         10 * time.Second,
+		GatewayURL:              envOrDefault("ASTER_GATEWAY_URL", "ws://localhost:8080/gateway/v1"),
+		GatewayHeartbeat:        45 * time.Second,
+		GatewayIdentifyTimeout:  10 * time.Second,
+		GatewaySessionRetention: 2 * time.Minute,
+		GatewayAllowedOrigins:   splitCSV(envOrDefault("ASTER_GATEWAY_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,tauri://localhost,http://tauri.localhost")),
 	}
 	if config.DatabaseURL == "" {
 		return Config{}, errors.New("ASTER_DATABASE_URL is required")
@@ -39,6 +50,15 @@ func Load() (Config, error) {
 	if config.ShutdownTimeout, err = durationFromEnv("ASTER_SHUTDOWN_TIMEOUT", config.ShutdownTimeout); err != nil {
 		return Config{}, err
 	}
+	if config.GatewayHeartbeat, err = durationFromEnv("ASTER_GATEWAY_HEARTBEAT_INTERVAL", config.GatewayHeartbeat); err != nil {
+		return Config{}, err
+	}
+	if config.GatewayIdentifyTimeout, err = durationFromEnv("ASTER_GATEWAY_IDENTIFY_TIMEOUT", config.GatewayIdentifyTimeout); err != nil {
+		return Config{}, err
+	}
+	if config.GatewaySessionRetention, err = durationFromEnv("ASTER_GATEWAY_SESSION_RETENTION", config.GatewaySessionRetention); err != nil {
+		return Config{}, err
+	}
 	if config.AutoMigrate, err = boolFromEnv("ASTER_AUTO_MIGRATE", false); err != nil {
 		return Config{}, err
 	}
@@ -46,6 +66,17 @@ func Load() (Config, error) {
 		return Config{}, errors.New("ASTER_REFRESH_TOKEN_TTL must be greater than ASTER_ACCESS_TOKEN_TTL")
 	}
 	return config, nil
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func envOrDefault(key, fallback string) string {
