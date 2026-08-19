@@ -3,8 +3,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260817064126-387ca8d91515 h1:EwgtS4lG2JTXNGjnD7dSHy2f17tc/Pb5lBJDMFpc8is=
-github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260817064126-387ca8d91515/go.mod h1:7wdNG4WaU4IMjK7tDW9ismklZS+nLzcRKvynRh255Y0=
+github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260819025340-56930a8e0a71 h1:ytS25bnkFLL4HQrrgYJsNa/1A5YNmbrgJ9x68f8Jkj4=
+github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260819025340-56930a8e0a71/go.mod h1:7wdNG4WaU4IMjK7tDW9ismklZS+nLzcRKvynRh255Y0=
 github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
 github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
 github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=

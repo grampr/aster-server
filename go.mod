@@ -6,7 +6,7 @@ toolchain go1.26.6
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260817064126-387ca8d91515
+	github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260819025340-56930a8e0a71
 	github.com/jackc/pgx/v5 v5.10.0
 	golang.org/x/crypto v0.55.0
 )

@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在は Password 認証と Aster Session の最小実装を提供します。
+現在は Password 認証、Aster Session、Guild・Channel・Messageの永続化を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -19,6 +19,29 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `POST` | `/api/v1/auth/token/refresh` | Refresh Token を交換する |
 | `POST` | `/api/v1/auth/logout` | 現在の Session を破棄する |
 | `GET` | `/api/v1/users/@me` | 認証済み User 自身を返す |
+| `GET, POST` | `/api/v1/guilds` | 参加Guildの一覧取得と作成 |
+| `GET, PATCH, DELETE` | `/api/v1/guilds/{guild_id}` | Guildの取得、変更、削除 |
+| `GET, POST` | `/api/v1/guilds/{guild_id}/channels` | Channelの一覧取得と作成 |
+| `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}` | Channelの取得、変更、削除 |
+| `GET, POST` | `/api/v1/channels/{channel_id}/messages` | Messageの一覧取得と投稿 |
+| `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}` | Messageの取得、編集、削除 |
+
+一覧APIは不透明なCursorと`limit`を使用します。
+Guildは参加順、Channelは`position`順、Messageは新しい順で安定してPageを返します。
+
+## Chatの暫定権限
+
+RoleとPermissionのProtocolが追加されるまで、権限は次の最小ルールで運用します。
+
+- Guild作成者をOwnerかつ最初のMemberにする
+- Guild MemberだけがGuild、Channel、Messageを参照できる
+- Guild OwnerだけがGuildとChannelを変更・削除できる
+- Guild MemberはText ChannelへMessageを投稿できる
+- MessageのAuthorだけが本文を編集できる
+- MessageのAuthorまたはGuild OwnerがMessageを削除できる
+
+存在しないResourceと、認証済みUserから参照できないResourceは、どちらも`404 NOT_FOUND`として返します。
+これにより、参加していないGuildやChannelの存在をAPIから推測できないようにします。
 
 ## 認証データの境界
 
@@ -80,7 +103,7 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 make check
 ```
 
-PostgreSQL を使用する認証 Lifecycle Test は、`ASTER_TEST_DATABASE_URL` を設定して実行します。
+PostgreSQL を使用する認証・Chat Lifecycle Test は、`ASTER_TEST_DATABASE_URL` を設定して実行します。
 
 ```bash
 make test-integration
@@ -90,6 +113,8 @@ make test-integration
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
+- Guildへの招待・参加API、Member一覧、Role、Permissionは未実装です。
+- Category、DM、Thread、添付ファイル、MessageのGateway通知は未実装です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。
 

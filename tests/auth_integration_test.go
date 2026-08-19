@@ -14,6 +14,7 @@ import (
 
 	protocolgo "github.com/grampr/Aster-protocol/packages/protocol-go/generated"
 	"github.com/grampr/aster-server/internal/auth"
+	"github.com/grampr/aster-server/internal/chat"
 	"github.com/grampr/aster-server/internal/httpapi"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
 	"github.com/grampr/aster-server/migrations"
@@ -48,7 +49,11 @@ func TestAuthenticationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, slog.New(slog.NewTextHandler(io.Discard, nil)), "test"))
+	chatService, err := chat.NewService(chat.NewPostgresStore(pool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.New(service, chatService, slog.New(slog.NewTextHandler(io.Discard, nil)), "test"))
 	defer server.Close()
 
 	registerBody := protocolgo.RegisterPasswordRequest{

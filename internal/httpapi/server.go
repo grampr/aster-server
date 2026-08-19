@@ -16,21 +16,23 @@ import (
 	"github.com/google/uuid"
 	protocolgo "github.com/grampr/Aster-protocol/packages/protocol-go/generated"
 	"github.com/grampr/aster-server/internal/auth"
+	"github.com/grampr/aster-server/internal/chat"
 )
 
 const maxRequestBodyBytes = 64 << 10
 
 type Server struct {
 	auth           *auth.Service
+	chat           *chat.Service
 	logger         *slog.Logger
 	version        string
 	requestLimiter *fixedWindowLimiter
 	loginLimiter   *fixedWindowLimiter
 }
 
-func New(authService *auth.Service, logger *slog.Logger, version string) http.Handler {
+func New(authService *auth.Service, chatService *chat.Service, logger *slog.Logger, version string) http.Handler {
 	server := &Server{
-		auth: authService, logger: logger, version: version,
+		auth: authService, chat: chatService, logger: logger, version: version,
 		requestLimiter: newFixedWindowLimiter(60, time.Minute),
 		loginLimiter:   newFixedWindowLimiter(5, 15*time.Minute),
 	}
@@ -41,6 +43,21 @@ func New(authService *auth.Service, logger *slog.Logger, version string) http.Ha
 	mux.HandleFunc("POST /api/v1/auth/token/refresh", server.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", server.logout)
 	mux.HandleFunc("GET /api/v1/users/@me", server.currentUser)
+	mux.HandleFunc("GET /api/v1/guilds", server.listGuilds)
+	mux.HandleFunc("POST /api/v1/guilds", server.createGuild)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}", server.getGuild)
+	mux.HandleFunc("PATCH /api/v1/guilds/{guild_id}", server.updateGuild)
+	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}", server.deleteGuild)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/channels", server.listChannels)
+	mux.HandleFunc("POST /api/v1/guilds/{guild_id}/channels", server.createChannel)
+	mux.HandleFunc("GET /api/v1/channels/{channel_id}", server.getChannel)
+	mux.HandleFunc("PATCH /api/v1/channels/{channel_id}", server.updateChannel)
+	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}", server.deleteChannel)
+	mux.HandleFunc("GET /api/v1/channels/{channel_id}/messages", server.listMessages)
+	mux.HandleFunc("POST /api/v1/channels/{channel_id}/messages", server.createMessage)
+	mux.HandleFunc("GET /api/v1/channels/{channel_id}/messages/{message_id}", server.getMessage)
+	mux.HandleFunc("PATCH /api/v1/channels/{channel_id}/messages/{message_id}", server.updateMessage)
+	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}", server.deleteMessage)
 	return server.requestID(server.recoverPanic(mux))
 }
 
