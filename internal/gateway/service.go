@@ -191,6 +191,10 @@ func (s *Service) PublishMessageReaction(recipients []uuid.UUID, add bool, react
 	s.hub.publishMessageReaction(eventName, recipients, reaction)
 }
 
+func (s *Service) PublishTypingStart(recipients []uuid.UUID, typing TypingStart) {
+	s.hub.publishTypingStart(recipients, typing)
+}
+
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {
 	messageType, payload, err := client.connection.ReadMessage()
 	if err != nil {

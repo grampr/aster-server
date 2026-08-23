@@ -317,6 +317,23 @@ func (s *Server) deleteMessage(writer http.ResponseWriter, request *http.Request
 	writer.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) startTyping(writer http.ResponseWriter, request *http.Request) {
+	user, ok := s.chatUser(writer, request, "channels_typing")
+	if !ok {
+		return
+	}
+	channelID, ok := s.pathID(writer, request, "channel_id")
+	if !ok {
+		return
+	}
+	if err := s.chat.StartTyping(request.Context(), user.ID, channelID); err != nil {
+		s.handleChatError(writer, request, err)
+		return
+	}
+	s.publishTypingStart(request, channelID, user)
+	writer.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) addMessageReaction(writer http.ResponseWriter, request *http.Request) {
 	s.changeMessageReaction(writer, request, true)
 }
@@ -412,6 +429,26 @@ func (s *Server) publishMessageReaction(request *http.Request, add bool, message
 	}
 	s.gateway.PublishMessageReaction(recipients, add, gateway.MessageReaction{
 		MessageID: messageID, ChannelID: channelID, UserID: userID, Emoji: reaction.Emoji, Count: reaction.Count,
+	})
+}
+
+func (s *Server) publishTypingStart(request *http.Request, channelID uuid.UUID, user auth.User) {
+	if s.gateway == nil {
+		return
+	}
+	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
+	defer cancel()
+	recipients, err := s.chat.ListChannelMemberIDs(publishContext, channelID)
+	if err != nil {
+		s.logger.Error("list gateway typing recipients", "request_id", requestIDFromContext(request), "channel_id", channelID, "error", err)
+		return
+	}
+	s.gateway.PublishTypingStart(recipients, gateway.TypingStart{
+		ChannelID: channelID,
+		User: gateway.UserSummary{
+			ID: user.ID, DisplayName: user.DisplayName, AvatarURL: user.AvatarURL,
+		},
+		StartedAt: time.Now().UTC(),
 	})
 }
 

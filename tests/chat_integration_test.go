@@ -79,7 +79,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("expected HELLO, got %+v", message)
 	}
 	if err := gatewayConnection.WriteJSON(map[string]any{
-		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16 | 128},
+		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16 | 128 | 512},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +112,9 @@ func TestChatLifecycle(t *testing.T) {
 	if textChannel.Position != 0 || voiceChannel.Position != 1 {
 		t.Fatalf("channels must receive stable positions: text=%d voice=%d", textChannel.Position, voiceChannel.Position)
 	}
+	requestJSON[struct{}](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/typing", nil, aliceSession.AccessToken, http.StatusNoContent)
+	assertTypingEvent(t, readGatewayMessage(t, gatewayConnection), textChannel.Id, alice.Id, "Alice")
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+voiceChannel.Id.String()+"/typing", nil, aliceSession.AccessToken, http.StatusNotFound)
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPatch, server.URL+"/api/v1/channels/"+textChannel.Id.String(), map[string]any{
 		"name": "変更不可",
 	}, bobSession.AccessToken, http.StatusForbidden)
@@ -284,5 +287,23 @@ func assertReactionEvent(t *testing.T, message integrationGatewayMessage, eventT
 	}
 	if message.Type != eventType || data.MessageID != messageID || data.UserID != userID || data.Emoji != "👍" || data.Count != count {
 		t.Fatalf("unexpected reaction event: type=%s data=%+v", message.Type, data)
+	}
+}
+
+func assertTypingEvent(t *testing.T, message integrationGatewayMessage, channelID, userID uuid.UUID, displayName string) {
+	t.Helper()
+	var data struct {
+		ChannelID uuid.UUID `json:"channel_id"`
+		User      struct {
+			ID          uuid.UUID `json:"id"`
+			DisplayName string    `json:"display_name"`
+		} `json:"user"`
+		StartedAt time.Time `json:"started_at"`
+	}
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != "TYPING_START" || data.ChannelID != channelID || data.User.ID != userID || data.User.DisplayName != displayName || data.StartedAt.IsZero() {
+		t.Fatalf("unexpected typing event: type=%s data=%+v", message.Type, data)
 	}
 }

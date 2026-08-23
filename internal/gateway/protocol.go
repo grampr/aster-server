@@ -19,6 +19,7 @@ const (
 	intentGuildMessages  int64 = 1 << 2
 	intentMessageContent int64 = 1 << 4
 	intentReactions      int64 = 1 << 7
+	intentTyping         int64 = 1 << 9
 )
 
 const (
@@ -29,6 +30,7 @@ const (
 	eventMessageDelete         = "MESSAGE_DELETE"
 	eventMessageReactionAdd    = "MESSAGE_REACTION_ADD"
 	eventMessageReactionRemove = "MESSAGE_REACTION_REMOVE"
+	eventTypingStart           = "TYPING_START"
 )
 
 type inboundMessage struct {
@@ -82,6 +84,12 @@ type MessageReaction struct {
 	Count     int
 }
 
+type TypingStart struct {
+	ChannelID uuid.UUID
+	User      UserSummary
+	StartedAt time.Time
+}
+
 type UserSummary struct {
 	ID          uuid.UUID
 	DisplayName string
@@ -125,6 +133,12 @@ type messageReactionPayload struct {
 	UserID    uuid.UUID `json:"user_id"`
 	Emoji     string    `json:"emoji"`
 	Count     int       `json:"count"`
+}
+
+type typingStartPayload struct {
+	ChannelID uuid.UUID   `json:"channel_id"`
+	User      userPayload `json:"user"`
+	StartedAt time.Time   `json:"started_at"`
 }
 
 func messageEventPayload(message Message, includeContent bool) messagePayload {
