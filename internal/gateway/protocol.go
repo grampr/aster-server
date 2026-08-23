@@ -18,14 +18,17 @@ const (
 
 	intentGuildMessages  int64 = 1 << 2
 	intentMessageContent int64 = 1 << 4
+	intentReactions      int64 = 1 << 7
 )
 
 const (
-	eventReady         = "READY"
-	eventResumed       = "RESUMED"
-	eventMessageCreate = "MESSAGE_CREATE"
-	eventMessageUpdate = "MESSAGE_UPDATE"
-	eventMessageDelete = "MESSAGE_DELETE"
+	eventReady                 = "READY"
+	eventResumed               = "RESUMED"
+	eventMessageCreate         = "MESSAGE_CREATE"
+	eventMessageUpdate         = "MESSAGE_UPDATE"
+	eventMessageDelete         = "MESSAGE_DELETE"
+	eventMessageReactionAdd    = "MESSAGE_REACTION_ADD"
+	eventMessageReactionRemove = "MESSAGE_REACTION_REMOVE"
 )
 
 type inboundMessage struct {
@@ -71,6 +74,14 @@ type MessageReply struct {
 	EditedAt  *time.Time
 }
 
+type MessageReaction struct {
+	MessageID uuid.UUID
+	ChannelID uuid.UUID
+	UserID    uuid.UUID
+	Emoji     string
+	Count     int
+}
+
 type UserSummary struct {
 	ID          uuid.UUID
 	DisplayName string
@@ -106,6 +117,14 @@ type userPayload struct {
 type messageDeletePayload struct {
 	ID        uuid.UUID `json:"id"`
 	ChannelID uuid.UUID `json:"channel_id"`
+}
+
+type messageReactionPayload struct {
+	MessageID uuid.UUID `json:"message_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	Emoji     string    `json:"emoji"`
+	Count     int       `json:"count"`
 }
 
 func messageEventPayload(message Message, includeContent bool) messagePayload {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -318,6 +319,39 @@ func (s *Service) UpdateMessage(ctx context.Context, userID, channelID, messageI
 
 func (s *Service) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error {
 	return s.store.DeleteMessage(ctx, userID, channelID, messageID)
+}
+
+func (s *Service) AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error) {
+	if err := validateReactionEmoji(emoji); err != nil {
+		return MessageReaction{}, false, err
+	}
+	return s.store.AddMessageReaction(ctx, userID, channelID, messageID, emoji, s.now().UTC())
+}
+
+func (s *Service) RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error) {
+	if err := validateReactionEmoji(emoji); err != nil {
+		return MessageReaction{}, false, err
+	}
+	return s.store.RemoveMessageReaction(ctx, userID, channelID, messageID, emoji)
+}
+
+func validateReactionEmoji(emoji string) error {
+	if !utf8.ValidString(emoji) || utf8.RuneCountInString(emoji) < 1 || utf8.RuneCountInString(emoji) > 64 {
+		return &ValidationError{Field: "emoji", Message: "must contain 1 to 64 Unicode characters"}
+	}
+	hasEmojiSymbol := false
+	for _, character := range emoji {
+		if unicode.IsControl(character) || unicode.IsSpace(character) {
+			return &ValidationError{Field: "emoji", Message: "must not contain control or whitespace characters"}
+		}
+		if unicode.Is(unicode.So, character) || character == '\u20e3' {
+			hasEmojiSymbol = true
+		}
+	}
+	if !hasEmojiSymbol {
+		return &ValidationError{Field: "emoji", Message: "must be a Unicode emoji sequence"}
+	}
+	return nil
 }
 
 func (s *Service) ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {

@@ -127,6 +127,36 @@ func TestGatewayRedactsMessageContentWithoutIntent(t *testing.T) {
 	}
 }
 
+func TestGatewayPublishesReactionWithReactionIntent(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}})
+	server := httptest.NewServer(service)
+	defer server.Close()
+	connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	defer connection.Close()
+	assertOpcode(t, readGateway(t, connection), opHello)
+	writeGateway(t, connection, map[string]any{
+		"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": intentReactions},
+	})
+	assertDispatch(t, readGateway(t, connection), eventReady, 0)
+
+	reaction := MessageReaction{
+		MessageID: uuid.MustParse("0198b8f2-4f80-7e67-b250-b4051415e3c2"),
+		ChannelID: uuid.MustParse("0198b8f1-3e7f-7d56-a14f-a3f40304d2b1"),
+		UserID:    userID, Emoji: "👍", Count: 2,
+	}
+	service.PublishMessageReaction([]uuid.UUID{userID}, true, reaction)
+	event := readGateway(t, connection)
+	assertDispatch(t, event, eventMessageReactionAdd, 1)
+	var payload messageReactionPayload
+	if err := json.Unmarshal(event.D, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.MessageID != reaction.MessageID || payload.UserID != userID || payload.Emoji != "👍" || payload.Count != 2 {
+		t.Fatalf("unexpected reaction payload: %+v", payload)
+	}
+}
+
 func TestGatewayClosesWhenAccessTokenIsNoLongerValid(t *testing.T) {
 	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
 	authenticator := fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}}

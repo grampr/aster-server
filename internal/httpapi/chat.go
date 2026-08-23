@@ -317,6 +317,42 @@ func (s *Server) deleteMessage(writer http.ResponseWriter, request *http.Request
 	writer.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) addMessageReaction(writer http.ResponseWriter, request *http.Request) {
+	s.changeMessageReaction(writer, request, true)
+}
+
+func (s *Server) removeMessageReaction(writer http.ResponseWriter, request *http.Request) {
+	s.changeMessageReaction(writer, request, false)
+}
+
+func (s *Server) changeMessageReaction(writer http.ResponseWriter, request *http.Request, add bool) {
+	bucket := "message_reactions_remove"
+	if add {
+		bucket = "message_reactions_add"
+	}
+	user, channelID, messageID, ok := s.messageRequest(writer, request, bucket)
+	if !ok {
+		return
+	}
+	emoji := request.PathValue("emoji")
+	var reaction chat.MessageReaction
+	var changed bool
+	var err error
+	if add {
+		reaction, changed, err = s.chat.AddMessageReaction(request.Context(), user.ID, channelID, messageID, emoji)
+	} else {
+		reaction, changed, err = s.chat.RemoveMessageReaction(request.Context(), user.ID, channelID, messageID, emoji)
+	}
+	if err != nil {
+		s.handleChatError(writer, request, err)
+		return
+	}
+	if changed {
+		s.publishMessageReaction(request, add, messageID, channelID, user.ID, reaction)
+	}
+	writeJSON(writer, http.StatusOK, messageReactionResponse(reaction))
+}
+
 func (s *Server) publishMessage(request *http.Request, event string, message chat.Message) {
 	if s.gateway == nil {
 		return
@@ -361,6 +397,22 @@ func (s *Server) publishMessageDelete(request *http.Request, messageID, channelI
 		return
 	}
 	s.gateway.PublishMessageDelete(recipients, messageID, channelID)
+}
+
+func (s *Server) publishMessageReaction(request *http.Request, add bool, messageID, channelID, userID uuid.UUID, reaction chat.MessageReaction) {
+	if s.gateway == nil {
+		return
+	}
+	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
+	defer cancel()
+	recipients, err := s.chat.ListChannelMemberIDs(publishContext, channelID)
+	if err != nil {
+		s.logger.Error("list gateway reaction recipients", "request_id", requestIDFromContext(request), "channel_id", channelID, "error", err)
+		return
+	}
+	s.gateway.PublishMessageReaction(recipients, add, gateway.MessageReaction{
+		MessageID: messageID, ChannelID: channelID, UserID: userID, Emoji: reaction.Emoji, Count: reaction.Count,
+	})
 }
 
 func (s *Server) chatUser(writer http.ResponseWriter, request *http.Request, bucket string) (auth.User, bool) {
@@ -481,9 +533,13 @@ func channelResponse(channel chat.Channel) protocolgo.Channel {
 }
 
 func messageResponse(message chat.Message) protocolgo.Message {
+	reactions := make([]protocolgo.MessageReaction, len(message.Reactions))
+	for index, reaction := range message.Reactions {
+		reactions[index] = messageReactionResponse(reaction)
+	}
 	response := protocolgo.Message{
 		Id: message.ID, ChannelId: message.ChannelID, Content: message.Content,
-		ReplyToMessageId: message.ReplyToMessageID, CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
+		ReplyToMessageId: message.ReplyToMessageID, Reactions: reactions, CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 		Author: protocolgo.UserSummary{
 			Id: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarUrl: message.Author.AvatarURL,
 		},
@@ -498,6 +554,10 @@ func messageResponse(message chat.Message) protocolgo.Message {
 		}
 	}
 	return response
+}
+
+func messageReactionResponse(reaction chat.MessageReaction) protocolgo.MessageReaction {
+	return protocolgo.MessageReaction{Emoji: protocolgo.ReactionEmoji(reaction.Emoji), Count: reaction.Count, Me: reaction.Me}
 }
 
 func pageResponse(hasMore bool, cursor *string) protocolgo.PageInfo {
