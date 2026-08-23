@@ -79,7 +79,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("expected HELLO, got %+v", message)
 	}
 	if err := gatewayConnection.WriteJSON(map[string]any{
-		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16},
+		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16 | 128},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +132,37 @@ func TestChatLifecycle(t *testing.T) {
 	firstEvent := readGatewayMessage(t, gatewayConnection)
 	if firstEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, firstEvent) != first.Id {
 		t.Fatalf("unexpected first message event: %+v", firstEvent)
+	}
+	if len(first.Reactions) != 0 {
+		t.Fatalf("new message must have no reactions: %+v", first.Reactions)
+	}
+	reactionURL := server.URL + "/api/v1/channels/" + textChannel.Id.String() + "/messages/" + first.Id.String() + "/reactions/" + url.PathEscape("👍")
+	bobReaction := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodPut, reactionURL, nil, bobSession.AccessToken, http.StatusOK)
+	if bobReaction.Count != 1 || !bobReaction.Me || bobReaction.Emoji != "👍" {
+		t.Fatalf("unexpected first reaction: %+v", bobReaction)
+	}
+	assertReactionEvent(t, readGatewayMessage(t, gatewayConnection), "MESSAGE_REACTION_ADD", first.Id, bob.Id, 1)
+	duplicateReaction := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodPut, reactionURL, nil, bobSession.AccessToken, http.StatusOK)
+	if duplicateReaction.Count != 1 || !duplicateReaction.Me {
+		t.Fatalf("duplicate reaction must be idempotent: %+v", duplicateReaction)
+	}
+	aliceReaction := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodPut, reactionURL, nil, aliceSession.AccessToken, http.StatusOK)
+	if aliceReaction.Count != 2 || !aliceReaction.Me {
+		t.Fatalf("unexpected second user reaction: %+v", aliceReaction)
+	}
+	assertReactionEvent(t, readGatewayMessage(t, gatewayConnection), "MESSAGE_REACTION_ADD", first.Id, alice.Id, 2)
+	messageWithReactions := requestJSON[protocolgo.Message](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+first.Id.String(), nil, bobSession.AccessToken, http.StatusOK)
+	if len(messageWithReactions.Reactions) != 1 || messageWithReactions.Reactions[0].Count != 2 || !messageWithReactions.Reactions[0].Me {
+		t.Fatalf("message reaction summary is incorrect: %+v", messageWithReactions.Reactions)
+	}
+	removedReaction := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodDelete, reactionURL, nil, bobSession.AccessToken, http.StatusOK)
+	if removedReaction.Count != 1 || removedReaction.Me {
+		t.Fatalf("unexpected removed reaction: %+v", removedReaction)
+	}
+	assertReactionEvent(t, readGatewayMessage(t, gatewayConnection), "MESSAGE_REACTION_REMOVE", first.Id, bob.Id, 1)
+	duplicateRemoval := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodDelete, reactionURL, nil, bobSession.AccessToken, http.StatusOK)
+	if duplicateRemoval.Count != 1 || duplicateRemoval.Me {
+		t.Fatalf("duplicate removal must be idempotent: %+v", duplicateRemoval)
 	}
 	second := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
 		Content: "2つ目", ReplyToMessageId: &first.Id,
@@ -238,4 +269,20 @@ func gatewayMessageID(t *testing.T, message integrationGatewayMessage) uuid.UUID
 		t.Fatal(err)
 	}
 	return data.ID
+}
+
+func assertReactionEvent(t *testing.T, message integrationGatewayMessage, eventType string, messageID, userID uuid.UUID, count int) {
+	t.Helper()
+	var data struct {
+		MessageID uuid.UUID `json:"message_id"`
+		UserID    uuid.UUID `json:"user_id"`
+		Emoji     string    `json:"emoji"`
+		Count     int       `json:"count"`
+	}
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != eventType || data.MessageID != messageID || data.UserID != userID || data.Emoji != "👍" || data.Count != count {
+		t.Fatalf("unexpected reaction event: type=%s data=%+v", message.Type, data)
+	}
 }

@@ -47,3 +47,16 @@ func TestOptionalTextNormalizesBlankToNull(t *testing.T) {
 		t.Fatalf("blank optional text should normalize to nil, got %q", *value)
 	}
 }
+
+func TestReactionEmojiValidation(t *testing.T) {
+	for _, emoji := range []string{"👍", "❤️", "👨‍👩‍👧‍👦"} {
+		if err := validateReactionEmoji(emoji); err != nil {
+			t.Fatalf("valid emoji %q was rejected: %v", emoji, err)
+		}
+	}
+	for _, invalid := range []string{"", "plain", "👍 ok", "\n", strings.Repeat("👍", 65)} {
+		if err := validateReactionEmoji(invalid); err == nil {
+			t.Fatalf("invalid reaction value %q was accepted", invalid)
+		}
+	}
+}
