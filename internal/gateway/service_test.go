@@ -157,6 +157,39 @@ func TestGatewayPublishesReactionWithReactionIntent(t *testing.T) {
 	}
 }
 
+func TestGatewayPublishesTypingWithTypingIntent(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}})
+	server := httptest.NewServer(service)
+	defer server.Close()
+	connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	defer connection.Close()
+	assertOpcode(t, readGateway(t, connection), opHello)
+	writeGateway(t, connection, map[string]any{
+		"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": intentTyping},
+	})
+	assertDispatch(t, readGateway(t, connection), eventReady, 0)
+
+	startedAt := time.Date(2026, time.August, 17, 6, 16, 0, 0, time.UTC)
+	typing := TypingStart{
+		ChannelID: uuid.MustParse("0198b8f1-3e7f-7d56-a14f-a3f40304d2b1"),
+		User: UserSummary{
+			ID: userID, DisplayName: "Alice",
+		},
+		StartedAt: startedAt,
+	}
+	service.PublishTypingStart([]uuid.UUID{userID}, typing)
+	event := readGateway(t, connection)
+	assertDispatch(t, event, eventTypingStart, 1)
+	var payload typingStartPayload
+	if err := json.Unmarshal(event.D, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ChannelID != typing.ChannelID || payload.User.ID != userID || payload.User.DisplayName != "Alice" || !payload.StartedAt.Equal(startedAt) {
+		t.Fatalf("unexpected typing payload: %+v", payload)
+	}
+}
+
 func TestGatewayClosesWhenAccessTokenIsNoLongerValid(t *testing.T) {
 	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
 	authenticator := fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}}

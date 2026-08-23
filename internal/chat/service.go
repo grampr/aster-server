@@ -189,6 +189,17 @@ func (s *Service) GetChannel(ctx context.Context, userID, channelID uuid.UUID) (
 	return s.store.GetChannel(ctx, userID, channelID)
 }
 
+func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) error {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	if channel.Type != ChannelTypeText {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID, input UpdateChannelInput) (Channel, error) {
 	if input.Name == nil && !input.Topic.Set && input.Position == nil {
 		return Channel{}, &ValidationError{Field: "body", Message: "must contain at least one field"}

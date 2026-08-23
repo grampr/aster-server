@@ -189,6 +189,32 @@ func (h *hub) publishMessageReaction(eventName string, recipients []uuid.UUID, r
 	}
 }
 
+func (h *hub) publishTypingStart(recipients []uuid.UUID, typing TypingStart) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+
+	payload := typingStartPayload{
+		ChannelID: typing.ChannelID,
+		User: userPayload{
+			ID: typing.User.ID, DisplayName: typing.User.DisplayName, AvatarURL: typing.User.AvatarURL,
+		},
+		StartedAt: typing.StartedAt,
+	}
+	seen := make(map[uuid.UUID]struct{}, len(recipients))
+	for _, userID := range recipients {
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		for _, s := range h.sessionsByUser[userID] {
+			if s.intents&intentTyping != 0 {
+				h.dispatchLocked(s, eventTypingStart, payload)
+			}
+		}
+	}
+}
+
 func (h *hub) dispatchLocked(s *session, eventName string, data any) bool {
 	s.sequence++
 	sequence := s.sequence
