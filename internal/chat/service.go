@@ -241,7 +241,7 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 	return s.store.DeleteChannel(ctx, userID, channelID)
 }
 
-func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string) (Message, error) {
+func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID) (Message, error) {
 	channel, err := s.store.GetChannel(ctx, userID, channelID)
 	if err != nil {
 		return Message{}, err
@@ -252,12 +252,21 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	if err := validateContent(content); err != nil {
 		return Message{}, err
 	}
+	if replyToMessageID != nil {
+		if *replyToMessageID == uuid.Nil {
+			return Message{}, &ValidationError{Field: "reply_to_message_id", Message: "must be a UUID"}
+		}
+		if _, err := s.store.GetMessage(ctx, userID, channelID, *replyToMessageID); err != nil {
+			return Message{}, err
+		}
+	}
 	id, err := newUUIDv7()
 	if err != nil {
 		return Message{}, err
 	}
 	return s.store.CreateMessage(ctx, Message{
-		ID: id, ChannelID: channelID, Author: UserSummary{ID: userID}, Content: content, CreatedAt: s.now().UTC(),
+		ID: id, ChannelID: channelID, Author: UserSummary{ID: userID}, Content: content,
+		ReplyToMessageID: replyToMessageID, CreatedAt: s.now().UTC(),
 	})
 }
 

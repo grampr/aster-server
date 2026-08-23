@@ -237,7 +237,7 @@ func (s *Server) createMessage(writer http.ResponseWriter, request *http.Request
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "Request body is invalid", err)
 		return
 	}
-	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, body.Content)
+	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, body.Content, body.ReplyToMessageId)
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
@@ -329,9 +329,18 @@ func (s *Server) publishMessage(request *http.Request, event string, message cha
 		return
 	}
 	payload := gateway.Message{
-		ID: message.ID, ChannelID: message.ChannelID, Content: message.Content,
+		ID: message.ID, ChannelID: message.ChannelID, Content: message.Content, ReplyToMessageID: message.ReplyToMessageID,
 		Author:    gateway.UserSummary{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
 		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
+	}
+	if message.ReplyTo != nil {
+		payload.ReplyTo = &gateway.MessageReply{
+			ID: message.ReplyTo.ID, ChannelID: message.ReplyTo.ChannelID, Content: message.ReplyTo.Content,
+			Author: gateway.UserSummary{
+				ID: message.ReplyTo.Author.ID, DisplayName: message.ReplyTo.Author.DisplayName, AvatarURL: message.ReplyTo.Author.AvatarURL,
+			},
+			CreatedAt: message.ReplyTo.CreatedAt, EditedAt: message.ReplyTo.EditedAt,
+		}
 	}
 	if event == "create" {
 		s.gateway.PublishMessageCreate(recipients, payload)
@@ -472,13 +481,23 @@ func channelResponse(channel chat.Channel) protocolgo.Channel {
 }
 
 func messageResponse(message chat.Message) protocolgo.Message {
-	return protocolgo.Message{
+	response := protocolgo.Message{
 		Id: message.ID, ChannelId: message.ChannelID, Content: message.Content,
-		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
+		ReplyToMessageId: message.ReplyToMessageID, CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 		Author: protocolgo.UserSummary{
 			Id: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarUrl: message.Author.AvatarURL,
 		},
 	}
+	if message.ReplyTo != nil {
+		response.ReplyTo = &protocolgo.MessageReply{
+			Id: message.ReplyTo.ID, ChannelId: message.ReplyTo.ChannelID, Content: message.ReplyTo.Content,
+			Author: protocolgo.UserSummary{
+				Id: message.ReplyTo.Author.ID, DisplayName: message.ReplyTo.Author.DisplayName, AvatarUrl: message.ReplyTo.Author.AvatarURL,
+			},
+			CreatedAt: message.ReplyTo.CreatedAt, EditedAt: message.ReplyTo.EditedAt,
+		}
+	}
+	return response
 }
 
 func pageResponse(hasMore bool, cursor *string) protocolgo.PageInfo {
