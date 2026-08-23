@@ -52,6 +52,17 @@ type gatewayMessage struct {
 }
 
 type Message struct {
+	ID               uuid.UUID
+	ChannelID        uuid.UUID
+	Author           UserSummary
+	Content          string
+	ReplyToMessageID *uuid.UUID
+	ReplyTo          *MessageReply
+	CreatedAt        time.Time
+	EditedAt         *time.Time
+}
+
+type MessageReply struct {
 	ID        uuid.UUID
 	ChannelID uuid.UUID
 	Author    UserSummary
@@ -67,6 +78,17 @@ type UserSummary struct {
 }
 
 type messagePayload struct {
+	ID               uuid.UUID            `json:"id"`
+	ChannelID        uuid.UUID            `json:"channel_id"`
+	Author           userPayload          `json:"author"`
+	Content          *string              `json:"content"`
+	ReplyToMessageID *uuid.UUID           `json:"reply_to_message_id"`
+	ReplyTo          *messageReplyPayload `json:"reply_to"`
+	CreatedAt        time.Time            `json:"created_at"`
+	EditedAt         *time.Time           `json:"edited_at"`
+}
+
+type messageReplyPayload struct {
 	ID        uuid.UUID   `json:"id"`
 	ChannelID uuid.UUID   `json:"channel_id"`
 	Author    userPayload `json:"author"`
@@ -91,9 +113,24 @@ func messageEventPayload(message Message, includeContent bool) messagePayload {
 	if includeContent {
 		content = &message.Content
 	}
-	return messagePayload{
+	payload := messagePayload{
 		ID: message.ID, ChannelID: message.ChannelID,
 		Author:  userPayload{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
-		Content: content, CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
+		Content: content, ReplyToMessageID: message.ReplyToMessageID,
+		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 	}
+	if message.ReplyTo != nil {
+		var replyContent *string
+		if includeContent {
+			replyContent = &message.ReplyTo.Content
+		}
+		payload.ReplyTo = &messageReplyPayload{
+			ID: message.ReplyTo.ID, ChannelID: message.ReplyTo.ChannelID,
+			Author: userPayload{
+				ID: message.ReplyTo.Author.ID, DisplayName: message.ReplyTo.Author.DisplayName, AvatarURL: message.ReplyTo.Author.AvatarURL,
+			},
+			Content: replyContent, CreatedAt: message.ReplyTo.CreatedAt, EditedAt: message.ReplyTo.EditedAt,
+		}
+	}
+	return payload
 }

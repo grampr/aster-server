@@ -51,6 +51,17 @@ type UserSummary struct {
 }
 
 type Message struct {
+	ID               uuid.UUID
+	ChannelID        uuid.UUID
+	Author           UserSummary
+	Content          string
+	ReplyToMessageID *uuid.UUID
+	ReplyTo          *MessageReply
+	CreatedAt        time.Time
+	EditedAt         *time.Time
+}
+
+type MessageReply struct {
 	ID        uuid.UUID
 	ChannelID uuid.UUID
 	Author    UserSummary

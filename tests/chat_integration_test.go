@@ -106,6 +106,9 @@ func TestChatLifecycle(t *testing.T) {
 	voiceChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
 		Type: protocolgo.VOICE, Name: "イベント会議",
 	}, aliceSession.AccessToken, http.StatusCreated)
+	otherTextChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
+		Type: protocolgo.TEXT, Name: "別の企画",
+	}, aliceSession.AccessToken, http.StatusCreated)
 	if textChannel.Position != 0 || voiceChannel.Position != 1 {
 		t.Fatalf("channels must receive stable positions: text=%d voice=%d", textChannel.Position, voiceChannel.Position)
 	}
@@ -114,6 +117,13 @@ func TestChatLifecycle(t *testing.T) {
 	}, bobSession.AccessToken, http.StatusForbidden)
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+voiceChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
 		Content: "voiceには送れない",
+	}, bobSession.AccessToken, http.StatusNotFound)
+	otherMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+otherTextChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
+		Content: "別チャンネルのMessage",
+	}, aliceSession.AccessToken, http.StatusCreated)
+	_ = readGatewayMessage(t, gatewayConnection)
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
+		Content: "別チャンネルには返信できない", ReplyToMessageId: &otherMessage.Id,
 	}, bobSession.AccessToken, http.StatusNotFound)
 
 	first := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
@@ -124,9 +134,28 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("unexpected first message event: %+v", firstEvent)
 	}
 	second := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "2つ目",
+		Content: "2つ目", ReplyToMessageId: &first.Id,
 	}, bobSession.AccessToken, http.StatusCreated)
-	_ = readGatewayMessage(t, gatewayConnection)
+	secondEvent := readGatewayMessage(t, gatewayConnection)
+	if secondEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, secondEvent) != second.Id {
+		t.Fatalf("unexpected reply event: %+v", secondEvent)
+	}
+	if second.ReplyToMessageId == nil || *second.ReplyToMessageId != first.Id || second.ReplyTo == nil || second.ReplyTo.Content != first.Content {
+		t.Fatalf("message reply was not resolved: %+v", second)
+	}
+	var secondEventData struct {
+		ReplyToMessageID *uuid.UUID `json:"reply_to_message_id"`
+		ReplyTo          *struct {
+			ID      uuid.UUID `json:"id"`
+			Content *string   `json:"content"`
+		} `json:"reply_to"`
+	}
+	if err := json.Unmarshal(secondEvent.Data, &secondEventData); err != nil {
+		t.Fatal(err)
+	}
+	if secondEventData.ReplyToMessageID == nil || *secondEventData.ReplyToMessageID != first.Id || secondEventData.ReplyTo == nil || secondEventData.ReplyTo.Content == nil || *secondEventData.ReplyTo.Content != first.Content {
+		t.Fatalf("gateway reply was not resolved: %+v", secondEventData)
+	}
 	third := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
 		Content: "3つ目",
 	}, bobSession.AccessToken, http.StatusCreated)
@@ -164,11 +193,15 @@ func TestChatLifecycle(t *testing.T) {
 	if cleared.Description != nil {
 		t.Fatalf("explicit null must clear description: %+v", cleared)
 	}
-	requestJSON[struct{}](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, aliceSession.AccessToken, http.StatusNoContent)
-	if event := readGatewayMessage(t, gatewayConnection); event.Type != "MESSAGE_DELETE" || gatewayMessageID(t, event) != second.Id {
+	requestJSON[struct{}](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+first.Id.String(), nil, aliceSession.AccessToken, http.StatusNoContent)
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "MESSAGE_DELETE" || gatewayMessageID(t, event) != first.Id {
 		t.Fatalf("unexpected message delete event: %+v", event)
 	}
-	requestJSON[protocolgo.Error](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, bobSession.AccessToken, http.StatusNotFound)
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+first.Id.String(), nil, bobSession.AccessToken, http.StatusNotFound)
+	replyAfterDelete := requestJSON[protocolgo.Message](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, bobSession.AccessToken, http.StatusOK)
+	if replyAfterDelete.ReplyToMessageId == nil || *replyAfterDelete.ReplyToMessageId != first.Id || replyAfterDelete.ReplyTo != nil {
+		t.Fatalf("deleted reply source must keep only its ID: %+v", replyAfterDelete)
+	}
 }
 
 func registerTestUser(t *testing.T, server *httptest.Server, email, displayName string) protocolgo.SessionTokenResponse {
