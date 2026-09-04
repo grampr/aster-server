@@ -215,6 +215,24 @@ func (h *hub) publishTypingStart(recipients []uuid.UUID, typing TypingStart) {
 	}
 }
 
+func (h *hub) publishForIntent(eventName string, intent int64, recipients []uuid.UUID, payload any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+	seen := make(map[uuid.UUID]struct{}, len(recipients))
+	for _, userID := range recipients {
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		for _, session := range h.sessionsByUser[userID] {
+			if session.intents&intent != 0 {
+				h.dispatchLocked(session, eventName, payload)
+			}
+		}
+	}
+}
+
 func (h *hub) dispatchLocked(s *session, eventName string, data any) bool {
 	s.sequence++
 	sequence := s.sequence

@@ -18,6 +18,10 @@ type PostgresStore struct {
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore { return &PostgresStore{pool: pool} }
 
 func (s *PostgresStore) CreateGuild(ctx context.Context, ownerID uuid.UUID, guild Guild) error {
+	everyoneRoleID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("create everyone role ID: %w", err)
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin guild creation: %w", err)
@@ -35,6 +39,13 @@ func (s *PostgresStore) CreateGuild(ctx context.Context, ownerID uuid.UUID, guil
 		guild.ID, ownerID, guild.CreatedAt,
 	); err != nil {
 		return fmt.Errorf("insert guild owner membership: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO roles (id, guild_id, name, permissions, position, managed, created_at, updated_at)
+		VALUES ($1, $2, '@everyone', 387, 0, TRUE, $3, $3)`,
+		everyoneRoleID, guild.ID, guild.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("insert guild everyone role: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit guild creation: %w", err)
@@ -91,16 +102,16 @@ func (s *PostgresStore) GetGuild(ctx context.Context, userID, guildID uuid.UUID)
 	return guild, nil
 }
 
-func (s *PostgresStore) UpdateGuild(ctx context.Context, ownerID, guildID uuid.UUID, input UpdateGuildInput, updatedAt time.Time) (Guild, error) {
+func (s *PostgresStore) UpdateGuild(ctx context.Context, _ uuid.UUID, guildID uuid.UUID, input UpdateGuildInput, updatedAt time.Time) (Guild, error) {
 	var guild Guild
 	err := s.pool.QueryRow(ctx, `
 		UPDATE guilds
-		SET name = COALESCE($3, name),
-		    description = CASE WHEN $4 THEN $5 ELSE description END,
-		    updated_at = $6
-		WHERE id = $1 AND owner_id = $2
+		SET name = COALESCE($2, name),
+		    description = CASE WHEN $3 THEN $4 ELSE description END,
+		    updated_at = $5
+		WHERE id = $1
 		RETURNING id, owner_id, name, description, icon_url, created_at`,
-		guildID, ownerID, input.Name, input.Description.Set, input.Description.Value, updatedAt,
+		guildID, input.Name, input.Description.Set, input.Description.Value, updatedAt,
 	).Scan(&guild.ID, &guild.OwnerID, &guild.Name, &guild.Description, &guild.IconURL, &guild.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Guild{}, ErrNotFound
@@ -111,8 +122,8 @@ func (s *PostgresStore) UpdateGuild(ctx context.Context, ownerID, guildID uuid.U
 	return guild, nil
 }
 
-func (s *PostgresStore) DeleteGuild(ctx context.Context, ownerID, guildID uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM guilds WHERE id = $1 AND owner_id = $2`, guildID, ownerID)
+func (s *PostgresStore) DeleteGuild(ctx context.Context, _ uuid.UUID, guildID uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM guilds WHERE id = $1`, guildID)
 	if err != nil {
 		return fmt.Errorf("delete guild: %w", err)
 	}
@@ -207,18 +218,18 @@ func (s *PostgresStore) GetChannel(ctx context.Context, userID, channelID uuid.U
 	return channel, nil
 }
 
-func (s *PostgresStore) UpdateChannel(ctx context.Context, ownerID, channelID uuid.UUID, input UpdateChannelInput, updatedAt time.Time) (Channel, error) {
+func (s *PostgresStore) UpdateChannel(ctx context.Context, _ uuid.UUID, channelID uuid.UUID, input UpdateChannelInput, updatedAt time.Time) (Channel, error) {
 	var channel Channel
 	err := s.pool.QueryRow(ctx, `
 		UPDATE channels c
-		SET name = COALESCE($3, c.name),
-		    topic = CASE WHEN $4 THEN $5 ELSE c.topic END,
-		    position = COALESCE($6, c.position),
-		    updated_at = $7
+		SET name = COALESCE($2, c.name),
+		    topic = CASE WHEN $3 THEN $4 ELSE c.topic END,
+		    position = COALESCE($5, c.position),
+		    updated_at = $6
 		FROM guilds g
-		WHERE c.id = $1 AND g.id = c.guild_id AND g.owner_id = $2
+		WHERE c.id = $1 AND g.id = c.guild_id
 		RETURNING c.id, c.guild_id, c.type, c.name, c.topic, c.position, c.created_at`,
-		channelID, ownerID, input.Name, input.Topic.Set, input.Topic.Value, input.Position, updatedAt,
+		channelID, input.Name, input.Topic.Set, input.Topic.Value, input.Position, updatedAt,
 	).Scan(&channel.ID, &channel.GuildID, &channel.Type, &channel.Name, &channel.Topic, &channel.Position, &channel.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Channel{}, ErrNotFound
@@ -229,10 +240,10 @@ func (s *PostgresStore) UpdateChannel(ctx context.Context, ownerID, channelID uu
 	return channel, nil
 }
 
-func (s *PostgresStore) DeleteChannel(ctx context.Context, ownerID, channelID uuid.UUID) error {
+func (s *PostgresStore) DeleteChannel(ctx context.Context, _ uuid.UUID, channelID uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM channels c USING guilds g
-		WHERE c.id = $1 AND g.id = c.guild_id AND g.owner_id = $2`, channelID, ownerID)
+		WHERE c.id = $1 AND g.id = c.guild_id`, channelID)
 	if err != nil {
 		return fmt.Errorf("delete channel: %w", err)
 	}
@@ -401,7 +412,11 @@ func (s *PostgresStore) DeleteMessage(ctx context.Context, userID, channelID, me
 		WHERE m.id = $1 AND m.channel_id = $2
 		  AND c.id = m.channel_id AND g.id = c.guild_id
 		  AND gm.guild_id = g.id AND gm.user_id = $3
-		  AND (m.author_id = $3 OR g.owner_id = $3)`, messageID, channelID, userID)
+		  AND (m.author_id = $3 OR g.owner_id = $3 OR EXISTS (
+		    SELECT 1 FROM roles r
+		    WHERE r.guild_id = g.id AND (r.permissions & 4) = 4
+		      AND (r.managed OR r.id IN (SELECT role_id FROM guild_member_roles WHERE guild_id = g.id AND user_id = $3))
+		  ))`, messageID, channelID, userID)
 	if err != nil {
 		return fmt.Errorf("delete message: %w", err)
 	}

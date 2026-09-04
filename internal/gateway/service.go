@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/grampr/aster-server/internal/auth"
+	"github.com/grampr/aster-server/internal/community"
 )
 
 const (
@@ -193,6 +194,22 @@ func (s *Service) PublishMessageReaction(recipients []uuid.UUID, add bool, react
 
 func (s *Service) PublishTypingStart(recipients []uuid.UUID, typing TypingStart) {
 	s.hub.publishTypingStart(recipients, typing)
+}
+
+func (s *Service) PublishMemberJoin(recipients []uuid.UUID, member community.Member) {
+	s.hub.publishForIntent(eventMemberJoin, intentGuildMembers, recipients, communityMemberPayload(member))
+}
+
+func (s *Service) PublishMemberUpdate(recipients []uuid.UUID, member community.Member) {
+	s.hub.publishForIntent(eventMemberUpdate, intentGuildMembers, recipients, communityMemberPayload(member))
+}
+
+func (s *Service) PublishMemberLeave(recipients []uuid.UUID, guildID, userID uuid.UUID) {
+	s.hub.publishForIntent(eventMemberLeave, intentGuildMembers, recipients, memberLeavePayload{GuildID: guildID, UserID: userID})
+}
+
+func (s *Service) PublishPresenceUpdate(recipients []uuid.UUID, guildID uuid.UUID, presence community.Presence) {
+	s.hub.publishForIntent(eventPresenceUpdate, intentGuildPresences, recipients, presenceUpdatePayload{GuildID: guildID, Presence: communityPresencePayload(presence)})
 }
 
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {

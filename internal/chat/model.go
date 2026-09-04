@@ -144,3 +144,15 @@ type Store interface {
 	RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error)
 	ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
 }
+
+type PermissionChecker interface {
+	HasPermission(context.Context, uuid.UUID, uuid.UUID, int64) (bool, error)
+}
+
+const (
+	permissionViewChannel    int64 = 1 << 0
+	permissionSendMessages   int64 = 1 << 1
+	permissionManageMessages int64 = 1 << 2
+	permissionManageChannels int64 = 1 << 3
+	permissionManageGuild    int64 = 1 << 4
+)
