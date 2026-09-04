@@ -106,13 +106,13 @@ func TestChatLifecycle(t *testing.T) {
 	}
 
 	textChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
-		Type: protocolgo.TEXT, Name: "イベント企画", Topic: stringPointer("日程を相談します"),
+		Type: protocolgo.CreateChannelRequestTypeTEXT, Name: "イベント企画", Topic: stringPointer("日程を相談します"),
 	}, aliceSession.AccessToken, http.StatusCreated)
 	voiceChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
-		Type: protocolgo.VOICE, Name: "イベント会議",
+		Type: protocolgo.CreateChannelRequestTypeVOICE, Name: "イベント会議",
 	}, aliceSession.AccessToken, http.StatusCreated)
 	otherTextChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
-		Type: protocolgo.TEXT, Name: "別の企画",
+		Type: protocolgo.CreateChannelRequestTypeTEXT, Name: "別の企画",
 	}, aliceSession.AccessToken, http.StatusCreated)
 	if textChannel.Position != 0 || voiceChannel.Position != 1 {
 		t.Fatalf("channels must receive stable positions: text=%d voice=%d", textChannel.Position, voiceChannel.Position)
@@ -240,6 +240,62 @@ func TestChatLifecycle(t *testing.T) {
 	replyAfterDelete := requestJSON[protocolgo.Message](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, bobSession.AccessToken, http.StatusOK)
 	if replyAfterDelete.ReplyToMessageId == nil || *replyAfterDelete.ReplyToMessageId != first.Id || replyAfterDelete.ReplyTo != nil {
 		t.Fatalf("deleted reply source must keep only its ID: %+v", replyAfterDelete)
+	}
+
+	category := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
+		Type: protocolgo.CreateChannelRequestTypeCATEGORY, Name: "企画カテゴリ",
+	}, aliceSession.AccessToken, http.StatusCreated)
+	if category.Type != protocolgo.ChannelTypeCATEGORY || category.GuildId == nil || *category.GuildId != guild.Id {
+		t.Fatalf("unexpected category: %+v", category)
+	}
+	thread := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/threads", protocolgo.CreateThreadRequest{
+		Name: "2つ目について", MessageId: &second.Id,
+	}, bobSession.AccessToken, http.StatusCreated)
+	if thread.Type != protocolgo.ChannelTypeTHREAD || thread.ParentId == nil || *thread.ParentId != textChannel.Id {
+		t.Fatalf("unexpected thread: %+v", thread)
+	}
+	threadMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+thread.Id.String()+"/messages", protocolgo.CreateMessageRequest{
+		Content: "スレッド内の返信",
+	}, bobSession.AccessToken, http.StatusCreated)
+	if threadMessage.ChannelId != thread.Id {
+		t.Fatalf("message must belong to thread: %+v", threadMessage)
+	}
+	_ = readGatewayMessage(t, gatewayConnection)
+
+	direct := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/users/@me/channels", protocolgo.CreateDirectChannelRequest{
+		RecipientId: bob.Id,
+	}, aliceSession.AccessToken, http.StatusOK)
+	if direct.Type != protocolgo.ChannelTypeDIRECT || direct.GuildId != nil || len(direct.Recipients) != 2 {
+		t.Fatalf("unexpected direct channel: %+v", direct)
+	}
+	directAgain := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/users/@me/channels", protocolgo.CreateDirectChannelRequest{
+		RecipientId: alice.Id,
+	}, bobSession.AccessToken, http.StatusOK)
+	if directAgain.Id != direct.Id {
+		t.Fatalf("direct channel creation must be idempotent: first=%s second=%s", direct.Id, directAgain.Id)
+	}
+	directMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+direct.Id.String()+"/messages", protocolgo.CreateMessageRequest{
+		Content: "AliceからBobへのDM",
+	}, aliceSession.AccessToken, http.StatusCreated)
+	directMessages := requestJSON[protocolgo.MessageList](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+direct.Id.String()+"/messages?limit=20", nil, bobSession.AccessToken, http.StatusOK)
+	if len(directMessages.Items) != 1 || directMessages.Items[0].Id != directMessage.Id {
+		t.Fatalf("unexpected direct messages: %+v", directMessages)
+	}
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/channels/"+direct.Id.String()+"/messages/"+directMessage.Id.String(), nil, bobSession.AccessToken, http.StatusForbidden)
+
+	search := requestJSON[protocolgo.MessageSearchResultList](t, server.Client(), http.MethodGet, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/messages/search?query="+url.QueryEscape("2つ目")+"&limit=20", nil, bobSession.AccessToken, http.StatusOK)
+	if len(search.Items) == 0 || search.Items[0].Message.Id != second.Id {
+		t.Fatalf("message search did not find the expected message: %+v", search)
+	}
+	state := requestJSON[protocolgo.ReadState](t, server.Client(), http.MethodPut, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/read-state", protocolgo.UpdateReadStateRequest{
+		LastReadMessageId: second.Id,
+	}, bobSession.AccessToken, http.StatusOK)
+	if state.LastReadMessageId == nil || *state.LastReadMessageId != second.Id {
+		t.Fatalf("unexpected read state: %+v", state)
+	}
+	states := requestJSON[protocolgo.ReadStateList](t, server.Client(), http.MethodGet, server.URL+"/api/v1/users/@me/read-states", nil, bobSession.AccessToken, http.StatusOK)
+	if len(states.Items) != 1 || states.Items[0].ChannelId != textChannel.Id {
+		t.Fatalf("unexpected read state list: %+v", states)
 	}
 }
 

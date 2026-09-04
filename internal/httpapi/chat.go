@@ -130,12 +130,13 @@ func (s *Server) createChannel(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	channel, err := s.chat.CreateChannel(request.Context(), user.ID, guildID, chat.CreateChannelInput{
-		Type: string(body.Type), Name: body.Name, Topic: body.Topic,
+		Type: string(body.Type), Name: body.Name, Topic: body.Topic, ParentID: body.ParentId,
 	})
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishChannel(request, "create", channel)
 	writeJSON(writer, http.StatusCreated, channelResponse(channel))
 }
 
@@ -198,12 +199,14 @@ func (s *Server) updateChannel(writer http.ResponseWriter, request *http.Request
 	}
 	channel, err := s.chat.UpdateChannel(request.Context(), user.ID, channelID, chat.UpdateChannelInput{
 		Name: body.Name, Position: body.Position,
-		Topic: chat.OptionalString{Set: body.Topic.Set, Value: body.Topic.Value},
+		Topic:    chat.OptionalString{Set: body.Topic.Set, Value: body.Topic.Value},
+		ParentID: chat.OptionalUUID{Set: body.ParentID.Set, Value: body.ParentID.Value},
 	})
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishChannel(request, "update", channel)
 	writeJSON(writer, http.StatusOK, channelResponse(channel))
 }
 
@@ -216,10 +219,16 @@ func (s *Server) deleteChannel(writer http.ResponseWriter, request *http.Request
 	if !ok {
 		return
 	}
+	channel, err := s.chat.GetChannel(request.Context(), user.ID, channelID)
+	if err != nil {
+		s.handleChatError(writer, request, err)
+		return
+	}
 	if err := s.chat.DeleteChannel(request.Context(), user.ID, channelID); err != nil {
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishChannel(request, "delete", channel)
 	writer.WriteHeader(http.StatusNoContent)
 }
 
@@ -381,6 +390,11 @@ func (s *Server) publishMessage(request *http.Request, event string, message cha
 		s.logger.Error("list gateway message recipients", "request_id", requestIDFromContext(request), "channel_id", message.ChannelID, "error", err)
 		return
 	}
+	direct, err := s.chat.IsDirectChannel(publishContext, message.ChannelID)
+	if err != nil {
+		s.logger.Error("identify gateway message intent", "channel_id", message.ChannelID, "error", err)
+		return
+	}
 	payload := gateway.Message{
 		ID: message.ID, ChannelID: message.ChannelID, Content: message.Content, ReplyToMessageID: message.ReplyToMessageID,
 		Author:    gateway.UserSummary{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
@@ -396,10 +410,65 @@ func (s *Server) publishMessage(request *http.Request, event string, message cha
 		}
 	}
 	if event == "create" {
-		s.gateway.PublishMessageCreate(recipients, payload)
+		s.gateway.PublishMessageCreate(recipients, direct, payload)
 		return
 	}
-	s.gateway.PublishMessageUpdate(recipients, payload)
+	s.gateway.PublishMessageUpdate(recipients, direct, payload)
+}
+
+func (s *Server) publishChannel(request *http.Request, event string, channel chat.Channel) {
+	if s.gateway == nil {
+		return
+	}
+	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
+	defer cancel()
+	direct := channel.Type == chat.ChannelTypeDirect
+	var recipients []uuid.UUID
+	var err error
+	if direct {
+		recipients = make([]uuid.UUID, len(channel.Recipients))
+		for index := range channel.Recipients {
+			recipients[index] = channel.Recipients[index].ID
+		}
+	} else if s.community != nil {
+		recipients, err = s.community.ListGuildMemberIDs(publishContext, channel.GuildID)
+	} else {
+		return
+	}
+	if err != nil {
+		s.logger.Error("list gateway channel recipients", "channel_id", channel.ID, "error", err)
+		return
+	}
+	payload := gatewayChannel(channel)
+	switch event {
+	case "create":
+		s.gateway.PublishChannelCreate(recipients, direct, payload)
+	case "update":
+		s.gateway.PublishChannelUpdate(recipients, direct, payload)
+	case "delete":
+		s.gateway.PublishChannelDelete(recipients, direct, channel.ID, payload.GuildID)
+	}
+}
+
+func gatewayChannel(channel chat.Channel) gateway.Channel {
+	var guildID *uuid.UUID
+	if channel.GuildID != uuid.Nil {
+		value := channel.GuildID
+		guildID = &value
+	}
+	var name *string
+	if channel.Name != "" {
+		value := channel.Name
+		name = &value
+	}
+	recipients := make([]gateway.UserSummary, len(channel.Recipients))
+	for index, user := range channel.Recipients {
+		recipients[index] = gateway.UserSummary{ID: user.ID, DisplayName: user.DisplayName, AvatarURL: user.AvatarURL}
+	}
+	return gateway.Channel{
+		ID: channel.ID, GuildID: guildID, ParentID: channel.ParentID, Type: channel.Type, Name: name,
+		Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt, Recipients: recipients,
+	}
 }
 
 func (s *Server) publishMessageDelete(request *http.Request, messageID, channelID uuid.UUID) {
@@ -413,7 +482,12 @@ func (s *Server) publishMessageDelete(request *http.Request, messageID, channelI
 		s.logger.Error("list gateway message recipients", "request_id", requestIDFromContext(request), "channel_id", channelID, "error", err)
 		return
 	}
-	s.gateway.PublishMessageDelete(recipients, messageID, channelID)
+	direct, err := s.chat.IsDirectChannel(publishContext, channelID)
+	if err != nil {
+		s.logger.Error("identify gateway message intent", "channel_id", channelID, "error", err)
+		return
+	}
+	s.gateway.PublishMessageDelete(recipients, direct, messageID, channelID)
 }
 
 func (s *Server) publishMessageReaction(request *http.Request, add bool, messageID, channelID, userID uuid.UUID, reaction chat.MessageReaction) {
@@ -553,6 +627,26 @@ type channelPatchBody struct {
 	Name     *string                `json:"name,omitempty"`
 	Topic    optionalNullableString `json:"topic,omitempty"`
 	Position *int                   `json:"position,omitempty"`
+	ParentID optionalNullableUUID   `json:"parent_id,omitempty"`
+}
+
+type optionalNullableUUID struct {
+	Set   bool
+	Value *uuid.UUID
+}
+
+func (value *optionalNullableUUID) UnmarshalJSON(payload []byte) error {
+	value.Set = true
+	if bytes.Equal(payload, []byte("null")) {
+		value.Value = nil
+		return nil
+	}
+	var decoded uuid.UUID
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return fmt.Errorf("must be a UUID or null: %w", err)
+	}
+	value.Value = &decoded
+	return nil
 }
 
 func guildResponse(guild chat.Guild) protocolgo.Guild {
@@ -563,9 +657,23 @@ func guildResponse(guild chat.Guild) protocolgo.Guild {
 }
 
 func channelResponse(channel chat.Channel) protocolgo.Channel {
+	var guildID *protocolgo.UUID
+	if channel.GuildID != uuid.Nil {
+		value := protocolgo.UUID(channel.GuildID)
+		guildID = &value
+	}
+	var name *string
+	if channel.Name != "" {
+		value := channel.Name
+		name = &value
+	}
+	recipients := make([]protocolgo.UserSummary, len(channel.Recipients))
+	for index, user := range channel.Recipients {
+		recipients[index] = protocolgo.UserSummary{Id: user.ID, DisplayName: user.DisplayName, AvatarUrl: user.AvatarURL}
+	}
 	return protocolgo.Channel{
-		Id: channel.ID, GuildId: channel.GuildID, Type: protocolgo.ChannelType(channel.Type),
-		Name: channel.Name, Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt,
+		Id: channel.ID, GuildId: guildID, ParentId: channel.ParentID, Type: protocolgo.ChannelType(channel.Type),
+		Name: name, Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt, Recipients: recipients,
 	}
 }
 

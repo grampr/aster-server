@@ -1,0 +1,14 @@
+DROP INDEX IF EXISTS messages_search_page_idx;
+DROP INDEX IF EXISTS messages_content_trgm_idx;
+DROP TABLE IF EXISTS channel_read_states;
+DROP TABLE IF EXISTS direct_channel_members;
+ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_parent_check;
+ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_shape_check;
+ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_type_check;
+DELETE FROM channels WHERE guild_id IS NULL OR type IN ('CATEGORY', 'THREAD', 'DIRECT');
+ALTER TABLE channels DROP COLUMN IF EXISTS starter_message_id;
+ALTER TABLE channels DROP COLUMN IF EXISTS parent_id;
+ALTER TABLE channels ALTER COLUMN guild_id SET NOT NULL;
+ALTER TABLE channels ALTER COLUMN name SET NOT NULL;
+ALTER TABLE channels ADD CONSTRAINT channels_type_check CHECK (type IN ('TEXT', 'VOICE'));
+ALTER TABLE channels ADD CONSTRAINT channels_check CHECK (type = 'TEXT' OR topic IS NULL);

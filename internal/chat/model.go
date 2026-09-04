@@ -14,8 +14,11 @@ var (
 )
 
 const (
-	ChannelTypeText  = "TEXT"
-	ChannelTypeVoice = "VOICE"
+	ChannelTypeText     = "TEXT"
+	ChannelTypeVoice    = "VOICE"
+	ChannelTypeCategory = "CATEGORY"
+	ChannelTypeThread   = "THREAD"
+	ChannelTypeDirect   = "DIRECT"
 )
 
 type ValidationError struct {
@@ -35,13 +38,16 @@ type Guild struct {
 }
 
 type Channel struct {
-	ID        uuid.UUID
-	GuildID   uuid.UUID
-	Type      string
-	Name      string
-	Topic     *string
-	Position  int
-	CreatedAt time.Time
+	ID               uuid.UUID
+	GuildID          uuid.UUID
+	Type             string
+	Name             string
+	Topic            *string
+	Position         int
+	CreatedAt        time.Time
+	ParentID         *uuid.UUID
+	StarterMessageID *uuid.UUID
+	Recipients       []UserSummary
 }
 
 type UserSummary struct {
@@ -93,15 +99,41 @@ type UpdateGuildInput struct {
 }
 
 type CreateChannelInput struct {
-	Type  string
-	Name  string
-	Topic *string
+	Type     string
+	Name     string
+	Topic    *string
+	ParentID *uuid.UUID
 }
 
 type UpdateChannelInput struct {
 	Name     *string
 	Topic    OptionalString
 	Position *int
+	ParentID OptionalUUID
+}
+
+type OptionalUUID struct {
+	Set   bool
+	Value *uuid.UUID
+}
+
+type CreateThreadInput struct {
+	Name      string
+	MessageID *uuid.UUID
+}
+type ReadState struct {
+	ChannelID         uuid.UUID
+	LastReadMessageID *uuid.UUID
+	UpdatedAt         time.Time
+}
+type MessageSearchResult struct {
+	Message Message
+	Excerpt string
+}
+type MessageSearchInput struct {
+	Query     string
+	ChannelID *uuid.UUID
+	AuthorID  *uuid.UUID
 }
 
 type Page[T any] struct {
@@ -147,6 +179,17 @@ type Store interface {
 
 type PermissionChecker interface {
 	HasPermission(context.Context, uuid.UUID, uuid.UUID, int64) (bool, error)
+}
+
+type TextStore interface {
+	IsDirectChannel(context.Context, uuid.UUID) (bool, error)
+	CreateDirectChannel(context.Context, uuid.UUID, uuid.UUID, Channel) (Channel, error)
+	ListDirectChannels(context.Context, uuid.UUID, *pageCursor, int) ([]Channel, error)
+	CreateThread(context.Context, uuid.UUID, uuid.UUID, Channel) (Channel, error)
+	ListThreads(context.Context, uuid.UUID, uuid.UUID, *pageCursor, int) ([]Channel, error)
+	SearchMessages(context.Context, uuid.UUID, uuid.UUID, MessageSearchInput, *pageCursor, int) ([]MessageSearchResult, error)
+	ListReadStates(context.Context, uuid.UUID) ([]ReadState, error)
+	UpdateReadState(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, time.Time) (ReadState, error)
 }
 
 const (

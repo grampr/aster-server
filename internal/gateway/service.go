@@ -172,16 +172,23 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
-func (s *Service) PublishMessageCreate(recipients []uuid.UUID, message Message) {
-	s.hub.publishMessage(eventMessageCreate, recipients, message)
+func (s *Service) PublishMessageCreate(recipients []uuid.UUID, direct bool, message Message) {
+	s.hub.publishMessage(eventMessageCreate, messageIntent(direct), recipients, message)
 }
 
-func (s *Service) PublishMessageUpdate(recipients []uuid.UUID, message Message) {
-	s.hub.publishMessage(eventMessageUpdate, recipients, message)
+func (s *Service) PublishMessageUpdate(recipients []uuid.UUID, direct bool, message Message) {
+	s.hub.publishMessage(eventMessageUpdate, messageIntent(direct), recipients, message)
 }
 
-func (s *Service) PublishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID) {
-	s.hub.publishMessageDelete(recipients, messageID, channelID)
+func (s *Service) PublishMessageDelete(recipients []uuid.UUID, direct bool, messageID, channelID uuid.UUID) {
+	s.hub.publishMessageDelete(messageIntent(direct), recipients, messageID, channelID)
+}
+
+func messageIntent(direct bool) int64 {
+	if direct {
+		return intentDirectMessages
+	}
+	return intentGuildMessages
 }
 
 func (s *Service) PublishMessageReaction(recipients []uuid.UUID, add bool, reaction MessageReaction) {
@@ -210,6 +217,40 @@ func (s *Service) PublishMemberLeave(recipients []uuid.UUID, guildID, userID uui
 
 func (s *Service) PublishPresenceUpdate(recipients []uuid.UUID, guildID uuid.UUID, presence community.Presence) {
 	s.hub.publishForIntent(eventPresenceUpdate, intentGuildPresences, recipients, presenceUpdatePayload{GuildID: guildID, Presence: communityPresencePayload(presence)})
+}
+
+func (s *Service) PublishChannelCreate(recipients []uuid.UUID, direct bool, channel Channel) {
+	s.hub.publishForIntent(eventChannelCreate, channelIntent(direct), recipients, channelEventPayload(channel))
+}
+
+func (s *Service) PublishChannelUpdate(recipients []uuid.UUID, direct bool, channel Channel) {
+	s.hub.publishForIntent(eventChannelUpdate, channelIntent(direct), recipients, channelEventPayload(channel))
+}
+
+func (s *Service) PublishChannelDelete(recipients []uuid.UUID, direct bool, channelID uuid.UUID, guildID *uuid.UUID) {
+	s.hub.publishForIntent(eventChannelDelete, channelIntent(direct), recipients, channelDeletePayload{ID: channelID, GuildID: guildID})
+}
+
+func (s *Service) PublishReadStateUpdate(userID uuid.UUID, state ReadState) {
+	s.hub.publishForUser(eventReadStateUpdate, userID, readStatePayload{ChannelID: state.ChannelID, LastReadMessageID: state.LastReadMessageID, UpdatedAt: state.UpdatedAt})
+}
+
+func channelIntent(direct bool) int64 {
+	if direct {
+		return intentDirectMessages
+	}
+	return intentGuilds
+}
+
+func channelEventPayload(channel Channel) channelPayload {
+	recipients := make([]userPayload, len(channel.Recipients))
+	for index, user := range channel.Recipients {
+		recipients[index] = userPayload{ID: user.ID, DisplayName: user.DisplayName, AvatarURL: user.AvatarURL}
+	}
+	return channelPayload{
+		ID: channel.ID, GuildID: channel.GuildID, ParentID: channel.ParentID, Type: channel.Type,
+		Name: channel.Name, Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt, Recipients: recipients,
+	}
 }
 
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {

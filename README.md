@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Member、Presence、Role、Permission、Inviteの永続化とWebSocket配信を提供します。
+現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Member、Presence、Role、Permission、Invite、Category、DM、Thread、検索、既読位置の永続化とWebSocket配信を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -27,6 +27,11 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}` | Messageの取得、編集、削除 |
 | `PUT, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` | Reactionの追加と解除 |
 | `POST` | `/api/v1/channels/{channel_id}/typing` | 入力開始または継続の通知 |
+| `GET, POST` | `/api/v1/users/@me/channels` | DM Channelの一覧取得と作成 |
+| `GET, POST` | `/api/v1/channels/{channel_id}/threads` | Threadの一覧取得と作成 |
+| `GET` | `/api/v1/guilds/{guild_id}/messages/search` | Guild内Messageの検索 |
+| `GET` | `/api/v1/users/@me/read-states` | 自分の既読位置一覧を取得 |
+| `PUT` | `/api/v1/channels/{channel_id}/read-state` | Channelの既読位置を更新 |
 | `GET, PATCH, DELETE` | `/api/v1/guilds/{guild_id}/members/{user_id}` | Memberの取得、変更、削除 |
 | `GET` | `/api/v1/guilds/{guild_id}/members` | Member一覧を取得 |
 | `DELETE` | `/api/v1/guilds/{guild_id}/members/@me` | Guildから退出 |
@@ -48,16 +53,17 @@ Serverは返信元の表示用情報をResponseとGateway Eventへ含めます�
 ReactionはMessage、User、Unicode絵文字の組を一意に保存します。
 同じ追加または解除を繰り返しても件数は変化せず、APIは操作後の件数と認証済みUser自身の状態を返します。
 
-## Chatの暫定権限
+## Chatの権限
 
-RoleとPermissionのProtocolが追加されるまで、権限は次の最小ルールで運用します。
+Guild内の操作はRoleに設定したPermission bitで判定します。
 
 - Guild作成者をOwnerかつ最初のMemberにする
 - Guild MemberだけがGuild、Channel、Messageを参照できる
-- Guild OwnerだけがGuildとChannelを変更・削除できる
-- Guild MemberはText ChannelへMessageを投稿できる
+- `MANAGE_GUILD`または`MANAGE_CHANNELS`を持つMemberが対象Resourceを管理できる
+- `VIEW_CHANNEL`と`SEND_MESSAGES`を持つMemberがGuildのText ChannelとThreadを利用できる
 - MessageのAuthorだけが本文を編集できる
-- MessageのAuthorまたはGuild OwnerがMessageを削除できる
+- MessageのAuthorまたは`MANAGE_MESSAGES`を持つMemberがMessageを削除できる
+- DMは参加者だけが参照・投稿でき、他UserのMessageは削除できない
 
 存在しないResourceと、認証済みUserから参照できないResourceは、どちらも`404 NOT_FOUND`として返します。
 これにより、参加していないGuildやChannelの存在をAPIから推測できないようにします。
@@ -72,6 +78,10 @@ Clientは`/gateway/v1`へ接続すると`HELLO`を受信し、Access TokenとInt
 - `MESSAGE_CREATE`
 - `MESSAGE_UPDATE`
 - `MESSAGE_DELETE`
+
+DMのMessage Eventは`DIRECT_MESSAGES` Intentへ配信します。
+GuildのChannel変更は`GUILDS` Intentへ、DM Channel変更は`DIRECT_MESSAGES` Intentへ`CHANNEL_CREATE`、`CHANNEL_UPDATE`、`CHANNEL_DELETE`として配信します。
+既読位置の変更は、更新したUser自身の全Gateway Sessionへ`READ_STATE_UPDATE`として配信します。
 
 `REACTIONS` Intentを購読したSessionには、操作後の件数を含む次のEventを配信します。
 
@@ -166,7 +176,7 @@ make test-integration
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
-- Category、DM、Thread、添付ファイルのAPIとGateway通知は未実装です。
+- 添付ファイル、音声接続、配信のAPIとGateway通知は未実装です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。
