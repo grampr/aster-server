@@ -30,7 +30,7 @@ const (
 	PermissionAll                  = PermissionViewChannel | PermissionSendMessages | PermissionManageMessages |
 		PermissionManageChannels | PermissionManageGuild | PermissionManageRoles | PermissionManageMembers |
 		PermissionCreateInvite | PermissionConnect | PermissionSpeak | PermissionStream
-	DefaultPermissions = PermissionViewChannel | PermissionSendMessages | PermissionCreateInvite | PermissionConnect
+	DefaultPermissions = PermissionViewChannel | PermissionSendMessages | PermissionCreateInvite | PermissionConnect | PermissionSpeak
 )
 
 type ValidationError struct{ Field, Message string }

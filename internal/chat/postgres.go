@@ -42,7 +42,7 @@ func (s *PostgresStore) CreateGuild(ctx context.Context, ownerID uuid.UUID, guil
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO roles (id, guild_id, name, permissions, position, managed, created_at, updated_at)
-		VALUES ($1, $2, '@everyone', 387, 0, TRUE, $3, $3)`,
+		VALUES ($1, $2, '@everyone', 899, 0, TRUE, $3, $3)`,
 		everyoneRoleID, guild.ID, guild.CreatedAt,
 	); err != nil {
 		return fmt.Errorf("insert guild everyone role: %w", err)
@@ -292,6 +292,9 @@ func (s *PostgresStore) CreateMessage(ctx context.Context, message Message) (Mes
 	if err := s.populateMessageReactions(ctx, message.Author.ID, &message); err != nil {
 		return Message{}, err
 	}
+	if err := s.populateMessageAttachments(ctx, &message); err != nil {
+		return Message{}, err
+	}
 	return message, nil
 }
 
@@ -355,6 +358,9 @@ func (s *PostgresStore) ListMessages(ctx context.Context, userID, channelID uuid
 	if err := s.populateMessageReactions(ctx, userID, messagePointers...); err != nil {
 		return nil, err
 	}
+	if err := s.populateMessageAttachments(ctx, messagePointers...); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -382,6 +388,9 @@ func (s *PostgresStore) GetMessage(ctx context.Context, userID, channelID, messa
 		return Message{}, fmt.Errorf("get message: %w", err)
 	}
 	if err := s.populateMessageReactions(ctx, userID, &message); err != nil {
+		return Message{}, err
+	}
+	if err := s.populateMessageAttachments(ctx, &message); err != nil {
 		return Message{}, err
 	}
 	return message, nil
@@ -413,6 +422,9 @@ func (s *PostgresStore) UpdateMessage(ctx context.Context, authorID, channelID, 
 		return Message{}, fmt.Errorf("update message: %w", err)
 	}
 	if err := s.populateMessageReactions(ctx, authorID, &message); err != nil {
+		return Message{}, err
+	}
+	if err := s.populateMessageAttachments(ctx, &message); err != nil {
 		return Message{}, err
 	}
 	return message, nil

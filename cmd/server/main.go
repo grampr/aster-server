@@ -16,7 +16,11 @@ import (
 	"github.com/grampr/aster-server/internal/config"
 	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
+	"github.com/grampr/aster-server/internal/media"
+	cloudflareplatform "github.com/grampr/aster-server/internal/platform/cloudflare"
+	"github.com/grampr/aster-server/internal/platform/objectstorage"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
+	"github.com/grampr/aster-server/internal/voice"
 	"github.com/grampr/aster-server/migrations"
 )
 
@@ -79,10 +83,32 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	var mediaService *media.Service
+	if config.ObjectStorageEndpoint != "" {
+		objects, objectErr := objectstorage.NewS3(objectstorage.Config{Endpoint: config.ObjectStorageEndpoint, Region: config.ObjectStorageRegion, Bucket: config.ObjectStorageBucket, AccessKeyID: config.ObjectStorageAccessKey, SecretAccessKey: config.ObjectStorageSecretKey, PathStyle: config.ObjectStoragePathStyle})
+		if objectErr != nil {
+			return objectErr
+		}
+		mediaService, err = media.NewService(media.NewPostgresStore(pool), objects, chatService)
+		if err != nil {
+			return err
+		}
+	}
+	var voiceService *voice.Service
+	if config.RealtimeAccountID != "" {
+		provider, providerErr := cloudflareplatform.NewRealtimeKit(cloudflareplatform.RealtimeKitConfig{AccountID: config.RealtimeAccountID, AppID: config.RealtimeAppID, APIToken: config.RealtimeAPIToken, ListenerPresetName: config.RealtimeListenerPreset, VoicePresetName: config.RealtimeVoicePreset, StreamPresetName: config.RealtimeStreamPreset})
+		if providerErr != nil {
+			return providerErr
+		}
+		voiceService, err = voice.NewService(voice.NewPostgresStore(pool), provider, chatService)
+		if err != nil {
+			return err
+		}
+	}
 
 	httpServer := &http.Server{
 		Addr:              config.HTTPAddress,
-		Handler:           httpapi.New(authService, chatService, communityService, gatewayService, logger, version),
+		Handler:           httpapi.NewWithMedia(authService, chatService, communityService, gatewayService, mediaService, voiceService, logger, version),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

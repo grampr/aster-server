@@ -266,6 +266,50 @@ func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) 
 	return nil
 }
 
+func (s *Service) CanSendMessages(ctx context.Context, userID, channelID uuid.UUID) (Channel, error) {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if !messageCapableChannel(channel.Type) {
+		return Channel{}, ErrNotFound
+	}
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionSendMessages); err != nil {
+		return Channel{}, err
+	}
+	return channel, nil
+}
+
+func (s *Service) CanConnectVoice(ctx context.Context, userID, channelID uuid.UUID) (Channel, error) {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if channel.Type != ChannelTypeVoice {
+		return Channel{}, ErrNotFound
+	}
+	if err := s.requirePermission(ctx, userID, channel.GuildID, 1<<8); err != nil {
+		return Channel{}, err
+	}
+	return channel, nil
+}
+
+func (s *Service) CanStreamVoice(ctx context.Context, userID, channelID uuid.UUID) error {
+	channel, err := s.CanConnectVoice(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	return s.requirePermission(ctx, userID, channel.GuildID, 1<<10)
+}
+
+func (s *Service) CanSpeakVoice(ctx context.Context, userID, channelID uuid.UUID) error {
+	channel, err := s.CanConnectVoice(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	return s.requirePermission(ctx, userID, channel.GuildID, 1<<9)
+}
+
 func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID, input UpdateChannelInput) (Channel, error) {
 	if input.Name == nil && !input.Topic.Set && input.Position == nil && !input.ParentID.Set {
 		return Channel{}, &ValidationError{Field: "body", Message: "must contain at least one field"}
@@ -333,7 +377,7 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 	return s.store.DeleteChannel(ctx, userID, channelID)
 }
 
-func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID) (Message, error) {
+func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID, attachmentIDs []uuid.UUID) (Message, error) {
 	channel, err := s.store.GetChannel(ctx, userID, channelID)
 	if err != nil {
 		return Message{}, err
@@ -344,7 +388,7 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	if err := s.requireChannelPermission(ctx, userID, channel, permissionSendMessages); err != nil {
 		return Message{}, err
 	}
-	if err := validateContent(content); err != nil {
+	if err := validateMessageBody(content, attachmentIDs); err != nil {
 		return Message{}, err
 	}
 	if replyToMessageID != nil {
@@ -359,10 +403,18 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return Message{}, err
 	}
-	return s.store.CreateMessage(ctx, Message{
+	message := Message{
 		ID: id, ChannelID: channelID, Author: UserSummary{ID: userID}, Content: content,
 		ReplyToMessageID: replyToMessageID, CreatedAt: s.now().UTC(),
-	})
+	}
+	if len(attachmentIDs) > 0 {
+		store, err := s.requireTextStore()
+		if err != nil {
+			return Message{}, err
+		}
+		return store.CreateMessageWithAttachments(ctx, message, attachmentIDs)
+	}
+	return s.store.CreateMessage(ctx, message)
 }
 
 func (s *Service) ListMessages(ctx context.Context, userID, channelID uuid.UUID, cursorValue string, limit int) (Page[Message], error) {
@@ -505,6 +557,29 @@ func validateContent(value string) error {
 	length := utf8.RuneCountInString(value)
 	if length < 1 || length > 4000 {
 		return &ValidationError{Field: "content", Message: "must contain between 1 and 4000 characters"}
+	}
+	return nil
+}
+
+func validateMessageBody(content string, attachmentIDs []uuid.UUID) error {
+	if len(attachmentIDs) == 0 {
+		return validateContent(content)
+	}
+	if utf8.RuneCountInString(content) > 4000 {
+		return &ValidationError{Field: "content", Message: "must contain at most 4000 characters"}
+	}
+	if len(attachmentIDs) > 10 {
+		return &ValidationError{Field: "attachment_ids", Message: "must contain at most 10 items"}
+	}
+	seen := make(map[uuid.UUID]struct{}, len(attachmentIDs))
+	for _, id := range attachmentIDs {
+		if id == uuid.Nil {
+			return &ValidationError{Field: "attachment_ids", Message: "must contain UUIDs"}
+		}
+		if _, ok := seen[id]; ok {
+			return &ValidationError{Field: "attachment_ids", Message: "must not contain duplicates"}
+		}
+		seen[id] = struct{}{}
 	}
 	return nil
 }

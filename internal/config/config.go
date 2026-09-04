@@ -21,6 +21,18 @@ type Config struct {
 	GatewaySessionRetention time.Duration
 	GatewayAllowedOrigins   []string
 	AutoMigrate             bool
+	ObjectStorageEndpoint   string
+	ObjectStorageRegion     string
+	ObjectStorageBucket     string
+	ObjectStorageAccessKey  string
+	ObjectStorageSecretKey  string
+	ObjectStoragePathStyle  bool
+	RealtimeAccountID       string
+	RealtimeAppID           string
+	RealtimeAPIToken        string
+	RealtimeListenerPreset  string
+	RealtimeVoicePreset     string
+	RealtimeStreamPreset    string
 }
 
 func Load() (Config, error) {
@@ -35,6 +47,8 @@ func Load() (Config, error) {
 		GatewayIdentifyTimeout:  10 * time.Second,
 		GatewaySessionRetention: 2 * time.Minute,
 		GatewayAllowedOrigins:   splitCSV(envOrDefault("ASTER_GATEWAY_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,tauri://localhost,http://tauri.localhost")),
+		ObjectStorageEndpoint:   os.Getenv("ASTER_OBJECT_STORAGE_ENDPOINT"), ObjectStorageRegion: envOrDefault("ASTER_OBJECT_STORAGE_REGION", "auto"), ObjectStorageBucket: os.Getenv("ASTER_OBJECT_STORAGE_BUCKET"), ObjectStorageAccessKey: os.Getenv("ASTER_OBJECT_STORAGE_ACCESS_KEY_ID"), ObjectStorageSecretKey: os.Getenv("ASTER_OBJECT_STORAGE_SECRET_ACCESS_KEY"),
+		RealtimeAccountID: os.Getenv("ASTER_CLOUDFLARE_ACCOUNT_ID"), RealtimeAppID: os.Getenv("ASTER_CLOUDFLARE_REALTIME_APP_ID"), RealtimeAPIToken: os.Getenv("ASTER_CLOUDFLARE_API_TOKEN"), RealtimeListenerPreset: envOrDefault("ASTER_CLOUDFLARE_REALTIME_LISTENER_PRESET", "group_call_listener"), RealtimeVoicePreset: envOrDefault("ASTER_CLOUDFLARE_REALTIME_VOICE_PRESET", "group_call_participant"), RealtimeStreamPreset: envOrDefault("ASTER_CLOUDFLARE_REALTIME_STREAM_PRESET", "group_call_host"),
 	}
 	if config.DatabaseURL == "" {
 		return Config{}, errors.New("ASTER_DATABASE_URL is required")
@@ -62,10 +76,38 @@ func Load() (Config, error) {
 	if config.AutoMigrate, err = boolFromEnv("ASTER_AUTO_MIGRATE", false); err != nil {
 		return Config{}, err
 	}
+	if config.ObjectStoragePathStyle, err = boolFromEnv("ASTER_OBJECT_STORAGE_PATH_STYLE", false); err != nil {
+		return Config{}, err
+	}
+	storageValues := []string{config.ObjectStorageEndpoint, config.ObjectStorageBucket, config.ObjectStorageAccessKey, config.ObjectStorageSecretKey}
+	if anySet(storageValues) && !allSet(storageValues) {
+		return Config{}, errors.New("all ASTER_OBJECT_STORAGE_* endpoint, bucket, and credential values are required together")
+	}
+	realtimeValues := []string{config.RealtimeAccountID, config.RealtimeAppID, config.RealtimeAPIToken}
+	if anySet(realtimeValues) && !allSet(realtimeValues) {
+		return Config{}, errors.New("Cloudflare Realtime account, app, and API token values are required together")
+	}
 	if config.RefreshTokenTTL <= config.AccessTokenTTL {
 		return Config{}, errors.New("ASTER_REFRESH_TOKEN_TTL must be greater than ASTER_ACCESS_TOKEN_TTL")
 	}
 	return config, nil
+}
+
+func anySet(values []string) bool {
+	for _, value := range values {
+		if value != "" {
+			return true
+		}
+	}
+	return false
+}
+func allSet(values []string) bool {
+	for _, value := range values {
+		if value == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func splitCSV(value string) []string {

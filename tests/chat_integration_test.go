@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,7 +22,9 @@ import (
 	"github.com/grampr/aster-server/internal/community"
 	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
+	mediaapi "github.com/grampr/aster-server/internal/media"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
+	voiceapi "github.com/grampr/aster-server/internal/voice"
 	"github.com/grampr/aster-server/migrations"
 )
 
@@ -70,7 +73,17 @@ func TestChatLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(authService, chatService, communityService, gatewayService, logger, "test"))
+	objects := newFakeObjectStorage()
+	mediaService, err := mediaapi.NewService(mediaapi.NewPostgresStore(pool), objects, chatService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	voiceProvider := newFakeVoiceProvider()
+	voiceService, err := voiceapi.NewService(voiceapi.NewPostgresStore(pool), voiceProvider, chatService)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.NewWithMedia(authService, chatService, communityService, gatewayService, mediaService, voiceService, logger, "test"))
 	defer server.Close()
 
 	aliceSession := registerTestUser(t, server, "alice@example.com", "Alice")
@@ -84,7 +97,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("expected HELLO, got %+v", message)
 	}
 	if err := gatewayConnection.WriteJSON(map[string]any{
-		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16 | 128 | 512},
+		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16 | 32 | 128 | 512},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -124,18 +137,18 @@ func TestChatLifecycle(t *testing.T) {
 		"name": "変更不可",
 	}, bobSession.AccessToken, http.StatusForbidden)
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+voiceChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "voiceには送れない",
+		Content: stringPointer("voiceには送れない"),
 	}, bobSession.AccessToken, http.StatusNotFound)
 	otherMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+otherTextChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "別チャンネルのMessage",
+		Content: stringPointer("別チャンネルのMessage"),
 	}, aliceSession.AccessToken, http.StatusCreated)
 	_ = readGatewayMessage(t, gatewayConnection)
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "別チャンネルには返信できない", ReplyToMessageId: &otherMessage.Id,
+		Content: stringPointer("別チャンネルには返信できない"), ReplyToMessageId: &otherMessage.Id,
 	}, bobSession.AccessToken, http.StatusNotFound)
 
 	first := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "1つ目",
+		Content: stringPointer("1つ目"),
 	}, bobSession.AccessToken, http.StatusCreated)
 	firstEvent := readGatewayMessage(t, gatewayConnection)
 	if firstEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, firstEvent) != first.Id {
@@ -173,7 +186,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("duplicate removal must be idempotent: %+v", duplicateRemoval)
 	}
 	second := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "2つ目", ReplyToMessageId: &first.Id,
+		Content: stringPointer("2つ目"), ReplyToMessageId: &first.Id,
 	}, bobSession.AccessToken, http.StatusCreated)
 	secondEvent := readGatewayMessage(t, gatewayConnection)
 	if secondEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, secondEvent) != second.Id {
@@ -196,7 +209,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("gateway reply was not resolved: %+v", secondEventData)
 	}
 	third := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "3つ目",
+		Content: stringPointer("3つ目"),
 	}, bobSession.AccessToken, http.StatusCreated)
 	_ = readGatewayMessage(t, gatewayConnection)
 	if first.Author.Id != bob.Id || second.Author.DisplayName != "Bob" {
@@ -255,7 +268,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("unexpected thread: %+v", thread)
 	}
 	threadMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+thread.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "スレッド内の返信",
+		Content: stringPointer("スレッド内の返信"),
 	}, bobSession.AccessToken, http.StatusCreated)
 	if threadMessage.ChannelId != thread.Id {
 		t.Fatalf("message must belong to thread: %+v", threadMessage)
@@ -275,7 +288,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("direct channel creation must be idempotent: first=%s second=%s", direct.Id, directAgain.Id)
 	}
 	directMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+direct.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "AliceからBobへのDM",
+		Content: stringPointer("AliceからBobへのDM"),
 	}, aliceSession.AccessToken, http.StatusCreated)
 	directMessages := requestJSON[protocolgo.MessageList](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+direct.Id.String()+"/messages?limit=20", nil, bobSession.AccessToken, http.StatusOK)
 	if len(directMessages.Items) != 1 || directMessages.Items[0].Id != directMessage.Id {
@@ -293,9 +306,71 @@ func TestChatLifecycle(t *testing.T) {
 	if state.LastReadMessageId == nil || *state.LastReadMessageId != second.Id {
 		t.Fatalf("unexpected read state: %+v", state)
 	}
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "READ_STATE_UPDATE" {
+		t.Fatalf("unexpected read state event: %+v", event)
+	}
 	states := requestJSON[protocolgo.ReadStateList](t, server.Client(), http.MethodGet, server.URL+"/api/v1/users/@me/read-states", nil, bobSession.AccessToken, http.StatusOK)
 	if len(states.Items) != 1 || states.Items[0].ChannelId != textChannel.Id {
 		t.Fatalf("unexpected read state list: %+v", states)
+	}
+
+	checksum := strings.Repeat("a", 64)
+	upload := requestJSON[protocolgo.AttachmentUploadIntent](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+otherTextChannel.Id.String()+"/attachments/intents", protocolgo.CreateAttachmentUploadIntentRequest{
+		Filename: "企画書.pdf", ContentType: "application/pdf", Size: 128, ChecksumSha256: checksum,
+	}, bobSession.AccessToken, http.StatusCreated)
+	if upload.Attachment.Status != protocolgo.PENDING || upload.UploadMethod != protocolgo.PUT || upload.UploadUrl == "" {
+		t.Fatalf("unexpected upload intent: %+v", upload)
+	}
+	readyAttachment := requestJSON[protocolgo.Attachment](t, server.Client(), http.MethodPost, server.URL+"/api/v1/attachments/"+upload.Attachment.Id.String()+"/finalize", nil, bobSession.AccessToken, http.StatusOK)
+	if readyAttachment.Status != protocolgo.READY {
+		t.Fatalf("attachment was not finalized: %+v", readyAttachment)
+	}
+	attachmentIDs := []uuid.UUID{readyAttachment.Id}
+	attachmentMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+otherTextChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{AttachmentIds: &attachmentIDs}, bobSession.AccessToken, http.StatusCreated)
+	if attachmentMessage.Content != "" || len(attachmentMessage.Attachments) != 1 || attachmentMessage.Attachments[0].Id != readyAttachment.Id {
+		t.Fatalf("unexpected attachment message: %+v", attachmentMessage)
+	}
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "MESSAGE_CREATE" || gatewayMessageID(t, event) != attachmentMessage.Id {
+		t.Fatalf("unexpected attachment message event: %+v", event)
+	}
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/attachments/"+readyAttachment.Id.String(), nil, bobSession.AccessToken, http.StatusForbidden)
+	downloadRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/attachments/"+readyAttachment.Id.String()+"/content", nil)
+	downloadRequest.Header.Set("Authorization", "Bearer "+bobSession.AccessToken)
+	noRedirectClient := *server.Client()
+	noRedirectClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	downloadResponse, err := noRedirectClient.Do(downloadRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = downloadResponse.Body.Close()
+	if downloadResponse.StatusCode != http.StatusSeeOther || downloadResponse.Header.Get("Location") == "" {
+		t.Fatalf("unexpected attachment redirect: status=%d location=%q", downloadResponse.StatusCode, downloadResponse.Header.Get("Location"))
+	}
+
+	voiceSession := requestJSON[protocolgo.VoiceSession](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+voiceChannel.Id.String()+"/voice", protocolgo.JoinVoiceChannelRequest{}, bobSession.AccessToken, http.StatusOK)
+	if voiceSession.Provider != "fake-voice" || voiceSession.Credential == "" || voiceSession.State.ChannelId == nil || *voiceSession.State.ChannelId != voiceChannel.Id {
+		t.Fatalf("unexpected voice session: %+v", voiceSession)
+	}
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "VOICE_STATE_UPDATE" {
+		t.Fatalf("unexpected voice join event: %+v", event)
+	}
+	muted := true
+	voiceState := requestJSON[protocolgo.VoiceState](t, server.Client(), http.MethodPatch, server.URL+"/api/v1/voice/sessions/@me", protocolgo.UpdateVoiceStateRequest{SelfMute: &muted}, bobSession.AccessToken, http.StatusOK)
+	if !voiceState.SelfMute {
+		t.Fatalf("voice state was not updated: %+v", voiceState)
+	}
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "VOICE_STATE_UPDATE" {
+		t.Fatalf("unexpected voice update event: %+v", event)
+	}
+	streaming := true
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPatch, server.URL+"/api/v1/voice/sessions/@me", protocolgo.UpdateVoiceStateRequest{SelfStream: &streaming}, bobSession.AccessToken, http.StatusForbidden)
+	voiceStates := requestJSON[protocolgo.VoiceStateList](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+voiceChannel.Id.String()+"/voice", nil, bobSession.AccessToken, http.StatusOK)
+	if len(voiceStates.Items) != 1 || voiceStates.Items[0].UserId != bob.Id {
+		t.Fatalf("unexpected voice state list: %+v", voiceStates)
+	}
+	requestJSON[struct{}](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/voice/sessions/@me", nil, bobSession.AccessToken, http.StatusNoContent)
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "VOICE_STATE_UPDATE" {
+		t.Fatalf("unexpected voice leave event: %+v", event)
 	}
 }
 
@@ -368,3 +443,43 @@ func assertTypingEvent(t *testing.T, message integrationGatewayMessage, channelI
 		t.Fatalf("unexpected typing event: type=%s data=%+v", message.Type, data)
 	}
 }
+
+type fakeObjectStorage struct {
+	metadata map[string]mediaapi.ObjectMetadata
+}
+
+func newFakeObjectStorage() *fakeObjectStorage {
+	return &fakeObjectStorage{metadata: map[string]mediaapi.ObjectMetadata{}}
+}
+func (f *fakeObjectStorage) PresignPut(_ context.Context, key string, metadata mediaapi.ObjectMetadata, _ time.Duration) (string, map[string]string, error) {
+	f.metadata[key] = metadata
+	return "https://upload.example/" + key, map[string]string{"Content-Type": metadata.ContentType}, nil
+}
+func (f *fakeObjectStorage) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "https://download.example/" + key, nil
+}
+func (f *fakeObjectStorage) Stat(_ context.Context, key string) (mediaapi.ObjectMetadata, error) {
+	metadata, ok := f.metadata[key]
+	if !ok {
+		return mediaapi.ObjectMetadata{}, mediaapi.ErrObjectNotFound
+	}
+	return metadata, nil
+}
+func (f *fakeObjectStorage) Delete(_ context.Context, key string) error {
+	delete(f.metadata, key)
+	return nil
+}
+
+type fakeVoiceProvider struct{ rooms int }
+
+func newFakeVoiceProvider() *fakeVoiceProvider { return &fakeVoiceProvider{} }
+func (f *fakeVoiceProvider) Name() string      { return "fake-voice" }
+func (f *fakeVoiceProvider) Endpoint() string  { return "https://voice.example/connect" }
+func (f *fakeVoiceProvider) CreateRoom(_ context.Context, _ string) (string, error) {
+	f.rooms++
+	return fmt.Sprintf("room-%d", f.rooms), nil
+}
+func (f *fakeVoiceProvider) AddParticipant(_ context.Context, _ string, customID, _ string, _, _ bool) (voiceapi.ProviderParticipant, error) {
+	return voiceapi.ProviderParticipant{ID: "participant-" + customID, Credential: "voice-token", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+func (f *fakeVoiceProvider) RemoveParticipant(_ context.Context, _, _ string) error { return nil }

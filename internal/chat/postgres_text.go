@@ -175,6 +175,9 @@ func (s *PostgresStore) SearchMessages(ctx context.Context, userID, guildID uuid
 	if err := s.populateMessageReactions(ctx, userID, pointers...); err != nil {
 		return nil, err
 	}
+	if err := s.populateMessageAttachments(ctx, pointers...); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 

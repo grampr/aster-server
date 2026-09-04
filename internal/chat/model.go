@@ -64,8 +64,21 @@ type Message struct {
 	ReplyToMessageID *uuid.UUID
 	ReplyTo          *MessageReply
 	Reactions        []MessageReaction
+	Attachments      []Attachment
 	CreatedAt        time.Time
 	EditedAt         *time.Time
+}
+
+type Attachment struct {
+	ID             uuid.UUID
+	UploaderID     uuid.UUID
+	ChannelID      uuid.UUID
+	Filename       string
+	ContentType    string
+	Size           int64
+	ChecksumSHA256 string
+	Status         string
+	CreatedAt      time.Time
 }
 
 type MessageReaction struct {
@@ -190,6 +203,7 @@ type TextStore interface {
 	SearchMessages(context.Context, uuid.UUID, uuid.UUID, MessageSearchInput, *pageCursor, int) ([]MessageSearchResult, error)
 	ListReadStates(context.Context, uuid.UUID) ([]ReadState, error)
 	UpdateReadState(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, time.Time) (ReadState, error)
+	CreateMessageWithAttachments(context.Context, Message, []uuid.UUID) (Message, error)
 }
 
 const (

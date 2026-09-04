@@ -19,6 +19,8 @@ import (
 	"github.com/grampr/aster-server/internal/chat"
 	"github.com/grampr/aster-server/internal/community"
 	"github.com/grampr/aster-server/internal/gateway"
+	"github.com/grampr/aster-server/internal/media"
+	"github.com/grampr/aster-server/internal/voice"
 )
 
 const maxRequestBodyBytes = 64 << 10
@@ -28,6 +30,8 @@ type Server struct {
 	chat           *chat.Service
 	community      *community.Service
 	gateway        *gateway.Service
+	media          *media.Service
+	voice          *voice.Service
 	logger         *slog.Logger
 	version        string
 	requestLimiter *fixedWindowLimiter
@@ -35,8 +39,12 @@ type Server struct {
 }
 
 func New(authService *auth.Service, chatService *chat.Service, communityService *community.Service, gatewayService *gateway.Service, logger *slog.Logger, version string) http.Handler {
+	return NewWithMedia(authService, chatService, communityService, gatewayService, nil, nil, logger, version)
+}
+
+func NewWithMedia(authService *auth.Service, chatService *chat.Service, communityService *community.Service, gatewayService *gateway.Service, mediaService *media.Service, voiceService *voice.Service, logger *slog.Logger, version string) http.Handler {
 	server := &Server{
-		auth: authService, chat: chatService, community: communityService, gateway: gatewayService, logger: logger, version: version,
+		auth: authService, chat: chatService, community: communityService, gateway: gatewayService, media: mediaService, voice: voiceService, logger: logger, version: version,
 		requestLimiter: newFixedWindowLimiter(60, time.Minute),
 		loginLimiter:   newFixedWindowLimiter(5, 15*time.Minute),
 	}
@@ -91,6 +99,19 @@ func New(authService *auth.Service, chatService *chat.Service, communityService 
 		mux.HandleFunc("GET /api/v1/invites/{invite_code}", server.getInvite)
 		mux.HandleFunc("POST /api/v1/invites/{invite_code}/accept", server.acceptInvite)
 		mux.HandleFunc("PUT /api/v1/users/@me/presence", server.updateCurrentUserPresence)
+	}
+	if mediaService != nil {
+		mux.HandleFunc("POST /api/v1/channels/{channel_id}/attachments/intents", server.createAttachmentUploadIntent)
+		mux.HandleFunc("GET /api/v1/attachments/{attachment_id}", server.getAttachment)
+		mux.HandleFunc("POST /api/v1/attachments/{attachment_id}/finalize", server.finalizeAttachment)
+		mux.HandleFunc("GET /api/v1/attachments/{attachment_id}/content", server.downloadAttachment)
+		mux.HandleFunc("DELETE /api/v1/attachments/{attachment_id}", server.deleteAttachment)
+	}
+	if voiceService != nil {
+		mux.HandleFunc("GET /api/v1/channels/{channel_id}/voice", server.listVoiceStates)
+		mux.HandleFunc("POST /api/v1/channels/{channel_id}/voice", server.joinVoiceChannel)
+		mux.HandleFunc("PATCH /api/v1/voice/sessions/@me", server.updateVoiceState)
+		mux.HandleFunc("DELETE /api/v1/voice/sessions/@me", server.leaveVoiceChannel)
 	}
 	return server.requestID(server.recoverPanic(mux))
 }
