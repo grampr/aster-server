@@ -18,11 +18,13 @@ const (
 	opHeartbeatAck   = 11
 
 	intentGuildMessages  int64 = 1 << 2
+	intentDirectMessages int64 = 1 << 3
 	intentMessageContent int64 = 1 << 4
 	intentReactions      int64 = 1 << 7
 	intentTyping         int64 = 1 << 9
 	intentGuildMembers   int64 = 1 << 1
 	intentGuildPresences int64 = 1 << 6
+	intentGuilds         int64 = 1 << 0
 )
 
 const (
@@ -38,6 +40,10 @@ const (
 	eventMemberUpdate          = "MEMBER_UPDATE"
 	eventMemberLeave           = "MEMBER_LEAVE"
 	eventPresenceUpdate        = "PRESENCE_UPDATE"
+	eventChannelCreate         = "CHANNEL_CREATE"
+	eventChannelUpdate         = "CHANNEL_UPDATE"
+	eventChannelDelete         = "CHANNEL_DELETE"
+	eventReadStateUpdate       = "READ_STATE_UPDATE"
 )
 
 type inboundMessage struct {
@@ -101,6 +107,47 @@ type UserSummary struct {
 	ID          uuid.UUID
 	DisplayName string
 	AvatarURL   *string
+}
+
+type Channel struct {
+	ID         uuid.UUID
+	GuildID    *uuid.UUID
+	ParentID   *uuid.UUID
+	Type       string
+	Name       *string
+	Topic      *string
+	Position   int
+	CreatedAt  time.Time
+	Recipients []UserSummary
+}
+
+type ReadState struct {
+	ChannelID         uuid.UUID
+	LastReadMessageID *uuid.UUID
+	UpdatedAt         time.Time
+}
+
+type channelPayload struct {
+	ID         uuid.UUID     `json:"id"`
+	GuildID    *uuid.UUID    `json:"guild_id"`
+	ParentID   *uuid.UUID    `json:"parent_id"`
+	Type       string        `json:"type"`
+	Name       *string       `json:"name"`
+	Topic      *string       `json:"topic"`
+	Position   int           `json:"position"`
+	CreatedAt  time.Time     `json:"created_at"`
+	Recipients []userPayload `json:"recipients"`
+}
+
+type channelDeletePayload struct {
+	ID      uuid.UUID  `json:"id"`
+	GuildID *uuid.UUID `json:"guild_id"`
+}
+
+type readStatePayload struct {
+	ChannelID         uuid.UUID  `json:"channel_id"`
+	LastReadMessageID *uuid.UUID `json:"last_read_message_id"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 type messagePayload struct {

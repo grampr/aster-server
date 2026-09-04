@@ -63,7 +63,7 @@ func TestGatewayIdentifyHeartbeatPublishAndResume(t *testing.T) {
 	}
 
 	message := testMessage()
-	service.PublishMessageCreate([]uuid.UUID{userID}, message)
+	service.PublishMessageCreate([]uuid.UUID{userID}, false, message)
 	created := readGateway(t, connection)
 	assertDispatch(t, created, eventMessageCreate, 1)
 	var createdData messagePayload
@@ -88,7 +88,7 @@ func TestGatewayIdentifyHeartbeatPublishAndResume(t *testing.T) {
 	})
 
 	message.Content = "切断中に更新されました"
-	service.PublishMessageUpdate([]uuid.UUID{userID}, message)
+	service.PublishMessageUpdate([]uuid.UUID{userID}, false, message)
 	resumedConnection := dialGateway(t, endpoint, nil)
 	defer resumedConnection.Close()
 	assertOpcode(t, readGateway(t, resumedConnection), opHello)
@@ -114,7 +114,7 @@ func TestGatewayRedactsMessageContentWithoutIntent(t *testing.T) {
 		"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": intentGuildMessages},
 	})
 	assertDispatch(t, readGateway(t, connection), eventReady, 0)
-	service.PublishMessageCreate([]uuid.UUID{userID}, testMessage())
+	service.PublishMessageCreate([]uuid.UUID{userID}, false, testMessage())
 	event := readGateway(t, connection)
 	var payload messagePayload
 	if err := json.Unmarshal(event.D, &payload); err != nil {
@@ -217,6 +217,52 @@ func TestGatewayPublishesMemberAndPresenceEventsByIntent(t *testing.T) {
 	}
 	if payload.GuildID != guildID || payload.Presence.UserID != userID || payload.Presence.Status != "ONLINE" {
 		t.Fatalf("unexpected presence payload: %+v", payload)
+	}
+}
+
+func TestGatewayPublishesDirectChannelAndReadStateEvents(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	channelID := uuid.MustParse("0198b8f1-3e7f-7d56-a14f-a3f40304d2b1")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}})
+	server := httptest.NewServer(service)
+	defer server.Close()
+	connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	defer connection.Close()
+	assertOpcode(t, readGateway(t, connection), opHello)
+	writeGateway(t, connection, map[string]any{
+		"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": intentDirectMessages | intentMessageContent},
+	})
+	assertDispatch(t, readGateway(t, connection), eventReady, 0)
+
+	createdAt := time.Date(2026, time.September, 4, 3, 0, 0, 0, time.UTC)
+	service.PublishChannelCreate([]uuid.UUID{userID}, true, Channel{
+		ID: channelID, Type: "DIRECT", CreatedAt: createdAt,
+		Recipients: []UserSummary{{ID: userID, DisplayName: "Alice"}},
+	})
+	channelEvent := readGateway(t, connection)
+	assertDispatch(t, channelEvent, eventChannelCreate, 1)
+	var channel channelPayload
+	if err := json.Unmarshal(channelEvent.D, &channel); err != nil {
+		t.Fatal(err)
+	}
+	if channel.ID != channelID || channel.GuildID != nil || channel.Type != "DIRECT" || len(channel.Recipients) != 1 {
+		t.Fatalf("unexpected direct channel payload: %+v", channel)
+	}
+
+	message := testMessage()
+	message.ChannelID = channelID
+	service.PublishMessageCreate([]uuid.UUID{userID}, true, message)
+	assertDispatch(t, readGateway(t, connection), eventMessageCreate, 2)
+
+	service.PublishReadStateUpdate(userID, ReadState{ChannelID: channelID, LastReadMessageID: &message.ID, UpdatedAt: createdAt})
+	readEvent := readGateway(t, connection)
+	assertDispatch(t, readEvent, eventReadStateUpdate, 3)
+	var state readStatePayload
+	if err := json.Unmarshal(readEvent.D, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.ChannelID != channelID || state.LastReadMessageID == nil || *state.LastReadMessageID != message.ID {
+		t.Fatalf("unexpected read state payload: %+v", state)
 	}
 }
 

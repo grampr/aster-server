@@ -22,6 +22,7 @@ const (
 
 type Service struct {
 	store       Store
+	textStore   TextStore
 	permissions PermissionChecker
 	now         func() time.Time
 }
@@ -31,6 +32,7 @@ func NewService(store Store, permissionChecker ...PermissionChecker) (*Service, 
 		return nil, errors.New("chat store is required")
 	}
 	service := &Service{store: store, now: time.Now}
+	service.textStore, _ = store.(TextStore)
 	if len(permissionChecker) > 0 {
 		service.permissions = permissionChecker[0]
 	}
@@ -165,8 +167,8 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	} else if guild.OwnerID != userID {
 		return Channel{}, ErrForbidden
 	}
-	if input.Type != ChannelTypeText && input.Type != ChannelTypeVoice {
-		return Channel{}, &ValidationError{Field: "type", Message: "must be TEXT or VOICE"}
+	if input.Type != ChannelTypeText && input.Type != ChannelTypeVoice && input.Type != ChannelTypeCategory {
+		return Channel{}, &ValidationError{Field: "type", Message: "must be TEXT, VOICE, or CATEGORY"}
 	}
 	name, err := validateName("name", input.Name)
 	if err != nil {
@@ -176,15 +178,21 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	if err != nil {
 		return Channel{}, err
 	}
-	if input.Type == ChannelTypeVoice && topic != nil {
-		return Channel{}, &ValidationError{Field: "topic", Message: "must be omitted for a VOICE channel"}
+	if input.Type != ChannelTypeText && topic != nil {
+		return Channel{}, &ValidationError{Field: "topic", Message: "is only supported for a TEXT channel"}
+	}
+	if input.ParentID != nil {
+		parent, err := s.store.GetChannel(ctx, userID, *input.ParentID)
+		if err != nil || parent.GuildID != guildID || parent.Type != ChannelTypeCategory {
+			return Channel{}, &ValidationError{Field: "parent_id", Message: "must identify a category in the same guild"}
+		}
 	}
 	id, err := newUUIDv7()
 	if err != nil {
 		return Channel{}, err
 	}
 	return s.store.CreateChannel(ctx, Channel{
-		ID: id, GuildID: guildID, Type: input.Type, Name: name, Topic: topic, CreatedAt: s.now().UTC(),
+		ID: id, GuildID: guildID, Type: input.Type, Name: name, Topic: topic, ParentID: input.ParentID, CreatedAt: s.now().UTC(),
 	})
 }
 
@@ -227,10 +235,21 @@ func (s *Service) GetChannel(ctx context.Context, userID, channelID uuid.UUID) (
 	if err != nil {
 		return Channel{}, err
 	}
-	if err := s.requirePermission(ctx, userID, channel.GuildID, permissionViewChannel); err != nil {
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionViewChannel); err != nil {
 		return Channel{}, err
 	}
 	return channel, nil
+}
+
+func (s *Service) requireChannelPermission(ctx context.Context, userID uuid.UUID, channel Channel, permission int64) error {
+	if channel.Type == ChannelTypeDirect {
+		return nil
+	}
+	return s.requirePermission(ctx, userID, channel.GuildID, permission)
+}
+
+func messageCapableChannel(channelType string) bool {
+	return channelType == ChannelTypeText || channelType == ChannelTypeThread || channelType == ChannelTypeDirect
 }
 
 func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) error {
@@ -238,17 +257,17 @@ func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) 
 	if err != nil {
 		return err
 	}
-	if channel.Type != ChannelTypeText {
+	if !messageCapableChannel(channel.Type) {
 		return ErrNotFound
 	}
-	if err := s.requirePermission(ctx, userID, channel.GuildID, permissionSendMessages); err != nil {
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionSendMessages); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID, input UpdateChannelInput) (Channel, error) {
-	if input.Name == nil && !input.Topic.Set && input.Position == nil {
+	if input.Name == nil && !input.Topic.Set && input.Position == nil && !input.ParentID.Set {
 		return Channel{}, &ValidationError{Field: "body", Message: "must contain at least one field"}
 	}
 	channel, err := s.store.GetChannel(ctx, userID, channelID)
@@ -286,6 +305,12 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 	if input.Position != nil && *input.Position < 0 {
 		return Channel{}, &ValidationError{Field: "position", Message: "must be zero or greater"}
 	}
+	if input.ParentID.Set && input.ParentID.Value != nil {
+		parent, err := s.store.GetChannel(ctx, userID, *input.ParentID.Value)
+		if err != nil || parent.GuildID != channel.GuildID || parent.Type != ChannelTypeCategory {
+			return Channel{}, &ValidationError{Field: "parent_id", Message: "must identify a category in the same guild"}
+		}
+	}
 	return s.store.UpdateChannel(ctx, userID, channelID, input, s.now().UTC())
 }
 
@@ -313,10 +338,10 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return Message{}, err
 	}
-	if channel.Type != ChannelTypeText {
+	if !messageCapableChannel(channel.Type) {
 		return Message{}, ErrNotFound
 	}
-	if err := s.requirePermission(ctx, userID, channel.GuildID, permissionSendMessages); err != nil {
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionSendMessages); err != nil {
 		return Message{}, err
 	}
 	if err := validateContent(content); err != nil {
@@ -345,7 +370,10 @@ func (s *Service) ListMessages(ctx context.Context, userID, channelID uuid.UUID,
 	if err != nil {
 		return Page[Message]{}, err
 	}
-	if err := s.requirePermission(ctx, userID, channel.GuildID, permissionViewChannel); err != nil {
+	if !messageCapableChannel(channel.Type) {
+		return Page[Message]{}, ErrNotFound
+	}
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionViewChannel); err != nil {
 		return Page[Message]{}, err
 	}
 	cursor, err := decodeCursor(cursorValue, cursorMessages)
@@ -403,7 +431,10 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, channelID, messageI
 		if err != nil {
 			return err
 		}
-		if err := s.requirePermission(ctx, userID, channel.GuildID, permissionManageMessages); err != nil {
+		if channel.Type == ChannelTypeDirect {
+			return ErrForbidden
+		}
+		if err := s.requireChannelPermission(ctx, userID, channel, permissionManageMessages); err != nil {
 			return err
 		}
 	}
