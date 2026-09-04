@@ -235,6 +235,10 @@ func (s *Service) PublishReadStateUpdate(userID uuid.UUID, state ReadState) {
 	s.hub.publishForUser(eventReadStateUpdate, userID, readStatePayload{ChannelID: state.ChannelID, LastReadMessageID: state.LastReadMessageID, UpdatedAt: state.UpdatedAt})
 }
 
+func (s *Service) PublishVoiceStateUpdate(recipients []uuid.UUID, state VoiceState) {
+	s.hub.publishForIntent(eventVoiceStateUpdate, 1<<5, recipients, state)
+}
+
 func channelIntent(direct bool) int64 {
 	if direct {
 		return intentDirectMessages

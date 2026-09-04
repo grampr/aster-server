@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Member、Presence、Role、Permission、Invite、Category、DM、Thread、検索、既読位置の永続化とWebSocket配信を提供します。
+現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Member、Presence、Role、Permission、Invite、Category、DM、Thread、検索、既読位置、Attachment、Voice Stateの永続化とWebSocket配信を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -32,6 +32,12 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET` | `/api/v1/guilds/{guild_id}/messages/search` | Guild内Messageの検索 |
 | `GET` | `/api/v1/users/@me/read-states` | 自分の既読位置一覧を取得 |
 | `PUT` | `/api/v1/channels/{channel_id}/read-state` | Channelの既読位置を更新 |
+| `POST` | `/api/v1/channels/{channel_id}/attachments/intents` | 直接Upload用の短命URLを発行 |
+| `GET, DELETE` | `/api/v1/attachments/{attachment_id}` | Attachment metadataの取得と削除 |
+| `POST` | `/api/v1/attachments/{attachment_id}/finalize` | Object metadataを照合してUploadを確定 |
+| `GET` | `/api/v1/attachments/{attachment_id}/content` | 権限確認後に短命Download URLへ移動 |
+| `GET, POST` | `/api/v1/channels/{channel_id}/voice` | Voice State一覧とVoice Channel参加 |
+| `PATCH, DELETE` | `/api/v1/voice/sessions/@me` | 自分のVoice State更新と退出 |
 | `GET, PATCH, DELETE` | `/api/v1/guilds/{guild_id}/members/{user_id}` | Memberの取得、変更、削除 |
 | `GET` | `/api/v1/guilds/{guild_id}/members` | Member一覧を取得 |
 | `DELETE` | `/api/v1/guilds/{guild_id}/members/@me` | Guildから退出 |
@@ -101,6 +107,20 @@ Dispatch EventのSequenceと直近EventはProcess Memoryへ保持します。
 一時切断後は`RESUME`で最後に処理したSequenceを送り、保持期間とBufferの範囲内なら未処理Eventを再配信します。
 HeartbeatごとにAccess Tokenを再検証し、期限切れまたはRotation済みTokenの接続を終了します。
 
+`GUILD_VOICE_STATES` Intentには、参加、退出、Mute、Deafen、Camera、Screen Shareの変更を`VOICE_STATE_UPDATE`として配信します。
+
+## Media Plane
+
+AttachmentのFile BodyはAster Serverを経由しません。
+ServerはChannel権限、25 MiBのFile Size上限、Userごとの1 GiB保存量と20件の同時Pending Uploadを確認し、R2/S3互換Object Storageの署名付きPUT URLを発行します。
+PUTにはContent-Type、Content-Length、SHA-256 Checksumを署名対象として含め、Finalize時にHEAD結果と宣言値を照合します。
+DownloadもChannel権限を確認してから5分間の署名付きGET URLへRedirectします。
+
+Voiceも同様にControl PlaneだけをGo Backendが担当します。
+`CONNECT`と`STREAM` Permissionを確認し、Cloudflare RealtimeKitのMeetingとParticipantを作成して、Client SDK用TokenだけをClientへ返します。
+Cloudflare API TokenはServer内だけに置き、ClientやLogへ返しません。
+Provider固有処理は`ObjectStorage`と`VoiceProvider` InterfaceのAdapterへ分離しています。
+
 ## 認証データの境界
 
 **Identity** は User の本人確認方法です。
@@ -157,6 +177,18 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_GATEWAY_SESSION_RETENTION` | `2m` | 切断したGateway SessionとEventを保持する時間 |
 | `ASTER_GATEWAY_ALLOWED_ORIGINS` | Local Vite/Tauri Origins | Cross-Origin WebSocketを許可するOriginのComma区切り一覧 |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
+| `ASTER_OBJECT_STORAGE_ENDPOINT` | なし | R2またはS3互換APIのEndpoint。未設定時はAttachment APIを無効化 |
+| `ASTER_OBJECT_STORAGE_REGION` | `auto` | S3署名に使用するRegion。R2は`auto` |
+| `ASTER_OBJECT_STORAGE_BUCKET` | なし | Attachment Objectを保存するBucket |
+| `ASTER_OBJECT_STORAGE_ACCESS_KEY_ID` | なし | Server専用のObject Storage Access Key ID |
+| `ASTER_OBJECT_STORAGE_SECRET_ACCESS_KEY` | なし | Server専用のObject Storage Secret Access Key |
+| `ASTER_OBJECT_STORAGE_PATH_STYLE` | `false` | MinIO等でPath-style URLを使うか |
+| `ASTER_CLOUDFLARE_ACCOUNT_ID` | なし | RealtimeKitを所有するCloudflare Account ID |
+| `ASTER_CLOUDFLARE_REALTIME_APP_ID` | なし | RealtimeKit App ID |
+| `ASTER_CLOUDFLARE_API_TOKEN` | なし | Realtime権限を持つServer専用API Token |
+| `ASTER_CLOUDFLARE_REALTIME_LISTENER_PRESET` | `group_call_listener` | `CONNECT`のみのParticipantへ適用するPreset |
+| `ASTER_CLOUDFLARE_REALTIME_VOICE_PRESET` | `group_call_participant` | `SPEAK`あり・`STREAM`なしのParticipantへ適用するPreset |
+| `ASTER_CLOUDFLARE_REALTIME_STREAM_PRESET` | `group_call_host` | `STREAM`ありのParticipantへ適用するPreset |
 
 ## 検証
 
@@ -176,7 +208,7 @@ make test-integration
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
-- 添付ファイル、音声接続、配信のAPIとGateway通知は未実装です。
+- Avatar Uploadと大規模公開配信は未実装です。画面共有はVoice Session内の小規模配信として扱います。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。

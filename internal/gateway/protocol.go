@@ -44,6 +44,7 @@ const (
 	eventChannelUpdate         = "CHANNEL_UPDATE"
 	eventChannelDelete         = "CHANNEL_DELETE"
 	eventReadStateUpdate       = "READ_STATE_UPDATE"
+	eventVoiceStateUpdate      = "VOICE_STATE_UPDATE"
 )
 
 type inboundMessage struct {
@@ -78,6 +79,20 @@ type Message struct {
 	ReplyTo          *MessageReply
 	CreatedAt        time.Time
 	EditedAt         *time.Time
+	Attachments      []Attachment
+}
+
+type Attachment struct {
+	ID             uuid.UUID `json:"id"`
+	UploaderID     uuid.UUID `json:"uploader_id"`
+	ChannelID      uuid.UUID `json:"channel_id"`
+	Filename       string    `json:"filename"`
+	ContentType    string    `json:"content_type"`
+	Size           int64     `json:"size"`
+	ChecksumSHA256 string    `json:"checksum_sha256"`
+	Status         string    `json:"status"`
+	DownloadURL    string    `json:"download_url"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type MessageReply struct {
@@ -127,6 +142,17 @@ type ReadState struct {
 	UpdatedAt         time.Time
 }
 
+type VoiceState struct {
+	UserID     uuid.UUID  `json:"user_id"`
+	ChannelID  *uuid.UUID `json:"channel_id"`
+	SessionID  *uuid.UUID `json:"session_id"`
+	SelfMute   bool       `json:"self_mute"`
+	SelfDeaf   bool       `json:"self_deaf"`
+	SelfVideo  bool       `json:"self_video"`
+	SelfStream bool       `json:"self_stream"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
 type channelPayload struct {
 	ID         uuid.UUID     `json:"id"`
 	GuildID    *uuid.UUID    `json:"guild_id"`
@@ -159,6 +185,7 @@ type messagePayload struct {
 	ReplyTo          *messageReplyPayload `json:"reply_to"`
 	CreatedAt        time.Time            `json:"created_at"`
 	EditedAt         *time.Time           `json:"edited_at"`
+	Attachments      []Attachment         `json:"attachments"`
 }
 
 type messageReplyPayload struct {
@@ -236,6 +263,10 @@ func communityMemberPayload(value community.Member) guildMemberPayload {
 
 func messageEventPayload(message Message, includeContent bool) messagePayload {
 	var content *string
+	attachments := message.Attachments
+	if attachments == nil {
+		attachments = []Attachment{}
+	}
 	if includeContent {
 		content = &message.Content
 	}
@@ -243,7 +274,7 @@ func messageEventPayload(message Message, includeContent bool) messagePayload {
 		ID: message.ID, ChannelID: message.ChannelID,
 		Author:  userPayload{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
 		Content: content, ReplyToMessageID: message.ReplyToMessageID,
-		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
+		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt, Attachments: attachments,
 	}
 	if message.ReplyTo != nil {
 		var replyContent *string

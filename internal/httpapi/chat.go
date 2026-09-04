@@ -246,7 +246,15 @@ func (s *Server) createMessage(writer http.ResponseWriter, request *http.Request
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "Request body is invalid", err)
 		return
 	}
-	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, body.Content, body.ReplyToMessageId)
+	content := ""
+	if body.Content != nil {
+		content = *body.Content
+	}
+	attachmentIDs := []uuid.UUID{}
+	if body.AttachmentIds != nil {
+		attachmentIDs = append(attachmentIDs, (*body.AttachmentIds)...)
+	}
+	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, content, body.ReplyToMessageId, attachmentIDs)
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
@@ -399,6 +407,10 @@ func (s *Server) publishMessage(request *http.Request, event string, message cha
 		ID: message.ID, ChannelID: message.ChannelID, Content: message.Content, ReplyToMessageID: message.ReplyToMessageID,
 		Author:    gateway.UserSummary{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
 		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
+	}
+	payload.Attachments = make([]gateway.Attachment, len(message.Attachments))
+	for index, attachment := range message.Attachments {
+		payload.Attachments[index] = gatewayAttachment(attachment)
 	}
 	if message.ReplyTo != nil {
 		payload.ReplyTo = &gateway.MessageReply{
@@ -689,6 +701,10 @@ func messageResponse(message chat.Message) protocolgo.Message {
 			Id: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarUrl: message.Author.AvatarURL,
 		},
 	}
+	response.Attachments = make([]protocolgo.Attachment, len(message.Attachments))
+	for index, attachment := range message.Attachments {
+		response.Attachments[index] = attachmentResponse(attachment)
+	}
 	if message.ReplyTo != nil {
 		response.ReplyTo = &protocolgo.MessageReply{
 			Id: message.ReplyTo.ID, ChannelId: message.ReplyTo.ChannelID, Content: message.ReplyTo.Content,
@@ -699,6 +715,24 @@ func messageResponse(message chat.Message) protocolgo.Message {
 		}
 	}
 	return response
+}
+
+func attachmentResponse(attachment chat.Attachment) protocolgo.Attachment {
+	return protocolgo.Attachment{
+		Id: attachment.ID, UploaderId: attachment.UploaderID, ChannelId: attachment.ChannelID,
+		Filename: attachment.Filename, ContentType: attachment.ContentType, Size: attachment.Size,
+		ChecksumSha256: attachment.ChecksumSHA256, Status: protocolgo.AttachmentStatus(attachment.Status),
+		DownloadUrl: "/api/v1/attachments/" + attachment.ID.String() + "/content", CreatedAt: attachment.CreatedAt,
+	}
+}
+
+func gatewayAttachment(attachment chat.Attachment) gateway.Attachment {
+	return gateway.Attachment{
+		ID: attachment.ID, UploaderID: attachment.UploaderID, ChannelID: attachment.ChannelID,
+		Filename: attachment.Filename, ContentType: attachment.ContentType, Size: attachment.Size,
+		ChecksumSHA256: attachment.ChecksumSHA256, Status: attachment.Status,
+		DownloadURL: "/api/v1/attachments/" + attachment.ID.String() + "/content", CreatedAt: attachment.CreatedAt,
+	}
 }
 
 func messageReactionResponse(reaction chat.MessageReaction) protocolgo.MessageReaction {
