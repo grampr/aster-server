@@ -12,6 +12,7 @@ import (
 
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
+	"github.com/grampr/aster-server/internal/community"
 	"github.com/grampr/aster-server/internal/config"
 	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
@@ -62,7 +63,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	chatService, err := chat.NewService(chat.NewPostgresStore(pool))
+	communityService, err := community.NewService(community.NewPostgresStore(pool))
+	if err != nil {
+		return err
+	}
+	chatService, err := chat.NewService(chat.NewPostgresStore(pool), communityService)
 	if err != nil {
 		return err
 	}
@@ -77,7 +82,7 @@ func run(logger *slog.Logger) error {
 
 	httpServer := &http.Server{
 		Addr:              config.HTTPAddress,
-		Handler:           httpapi.New(authService, chatService, gatewayService, logger, version),
+		Handler:           httpapi.New(authService, chatService, communityService, gatewayService, logger, version),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

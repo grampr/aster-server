@@ -18,6 +18,7 @@ import (
 	protocolgo "github.com/grampr/Aster-protocol/packages/protocol-go/generated"
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
+	"github.com/grampr/aster-server/internal/community"
 	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
@@ -53,7 +54,11 @@ func TestChatLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chatService, err := chat.NewService(chat.NewPostgresStore(pool))
+	communityService, err := community.NewService(community.NewPostgresStore(pool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatService, err := chat.NewService(chat.NewPostgresStore(pool), communityService)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +70,7 @@ func TestChatLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(authService, chatService, gatewayService, logger, "test"))
+	server := httptest.NewServer(httpapi.New(authService, chatService, communityService, gatewayService, logger, "test"))
 	defer server.Close()
 
 	aliceSession := registerTestUser(t, server, "alice@example.com", "Alice")

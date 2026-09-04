@@ -21,15 +21,34 @@ const (
 )
 
 type Service struct {
-	store Store
-	now   func() time.Time
+	store       Store
+	permissions PermissionChecker
+	now         func() time.Time
 }
 
-func NewService(store Store) (*Service, error) {
+func NewService(store Store, permissionChecker ...PermissionChecker) (*Service, error) {
 	if store == nil {
 		return nil, errors.New("chat store is required")
 	}
-	return &Service{store: store, now: time.Now}, nil
+	service := &Service{store: store, now: time.Now}
+	if len(permissionChecker) > 0 {
+		service.permissions = permissionChecker[0]
+	}
+	return service, nil
+}
+
+func (s *Service) requirePermission(ctx context.Context, userID, guildID uuid.UUID, permission int64) error {
+	if s.permissions == nil {
+		return nil
+	}
+	allowed, err := s.permissions.HasPermission(ctx, userID, guildID, permission)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrForbidden
+	}
+	return nil
 }
 
 func (s *Service) CreateGuild(ctx context.Context, ownerID uuid.UUID, input CreateGuildInput) (Guild, error) {
@@ -95,7 +114,11 @@ func (s *Service) UpdateGuild(ctx context.Context, userID, guildID uuid.UUID, in
 	if err != nil {
 		return Guild{}, err
 	}
-	if current.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, guildID, permissionManageGuild); err != nil {
+			return Guild{}, err
+		}
+	} else if current.OwnerID != userID {
 		return Guild{}, ErrForbidden
 	}
 	if input.Name != nil {
@@ -120,7 +143,11 @@ func (s *Service) DeleteGuild(ctx context.Context, userID, guildID uuid.UUID) er
 	if err != nil {
 		return err
 	}
-	if guild.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, guildID, permissionManageGuild); err != nil {
+			return err
+		}
+	} else if guild.OwnerID != userID {
 		return ErrForbidden
 	}
 	return s.store.DeleteGuild(ctx, userID, guildID)
@@ -131,7 +158,11 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	if err != nil {
 		return Channel{}, err
 	}
-	if guild.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, guildID, permissionManageChannels); err != nil {
+			return Channel{}, err
+		}
+	} else if guild.OwnerID != userID {
 		return Channel{}, ErrForbidden
 	}
 	if input.Type != ChannelTypeText && input.Type != ChannelTypeVoice {
@@ -158,6 +189,12 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 }
 
 func (s *Service) ListChannels(ctx context.Context, userID, guildID uuid.UUID, cursorValue string, limit int) (Page[Channel], error) {
+	if _, err := s.store.GetGuild(ctx, userID, guildID); err != nil {
+		return Page[Channel]{}, err
+	}
+	if err := s.requirePermission(ctx, userID, guildID, permissionViewChannel); err != nil {
+		return Page[Channel]{}, err
+	}
 	cursor, err := decodeCursor(cursorValue, cursorChannels)
 	if err != nil {
 		return Page[Channel]{}, err
@@ -186,7 +223,14 @@ func (s *Service) ListChannels(ctx context.Context, userID, guildID uuid.UUID, c
 }
 
 func (s *Service) GetChannel(ctx context.Context, userID, channelID uuid.UUID) (Channel, error) {
-	return s.store.GetChannel(ctx, userID, channelID)
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if err := s.requirePermission(ctx, userID, channel.GuildID, permissionViewChannel); err != nil {
+		return Channel{}, err
+	}
+	return channel, nil
 }
 
 func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) error {
@@ -196,6 +240,9 @@ func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) 
 	}
 	if channel.Type != ChannelTypeText {
 		return ErrNotFound
+	}
+	if err := s.requirePermission(ctx, userID, channel.GuildID, permissionSendMessages); err != nil {
+		return err
 	}
 	return nil
 }
@@ -212,7 +259,11 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return Channel{}, err
 	}
-	if guild.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, channel.GuildID, permissionManageChannels); err != nil {
+			return Channel{}, err
+		}
+	} else if guild.OwnerID != userID {
 		return Channel{}, ErrForbidden
 	}
 	if input.Name != nil {
@@ -247,7 +298,11 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return err
 	}
-	if guild.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, channel.GuildID, permissionManageChannels); err != nil {
+			return err
+		}
+	} else if guild.OwnerID != userID {
 		return ErrForbidden
 	}
 	return s.store.DeleteChannel(ctx, userID, channelID)
@@ -260,6 +315,9 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	}
 	if channel.Type != ChannelTypeText {
 		return Message{}, ErrNotFound
+	}
+	if err := s.requirePermission(ctx, userID, channel.GuildID, permissionSendMessages); err != nil {
+		return Message{}, err
 	}
 	if err := validateContent(content); err != nil {
 		return Message{}, err
@@ -283,6 +341,13 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 }
 
 func (s *Service) ListMessages(ctx context.Context, userID, channelID uuid.UUID, cursorValue string, limit int) (Page[Message], error) {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Page[Message]{}, err
+	}
+	if err := s.requirePermission(ctx, userID, channel.GuildID, permissionViewChannel); err != nil {
+		return Page[Message]{}, err
+	}
 	cursor, err := decodeCursor(cursorValue, cursorMessages)
 	if err != nil {
 		return Page[Message]{}, err
@@ -329,6 +394,19 @@ func (s *Service) UpdateMessage(ctx context.Context, userID, channelID, messageI
 }
 
 func (s *Service) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error {
+	message, err := s.store.GetMessage(ctx, userID, channelID, messageID)
+	if err != nil {
+		return err
+	}
+	if message.Author.ID != userID {
+		channel, err := s.store.GetChannel(ctx, userID, channelID)
+		if err != nil {
+			return err
+		}
+		if err := s.requirePermission(ctx, userID, channel.GuildID, permissionManageMessages); err != nil {
+			return err
+		}
+	}
 	return s.store.DeleteMessage(ctx, userID, channelID, messageID)
 }
 

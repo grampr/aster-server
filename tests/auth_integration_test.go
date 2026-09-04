@@ -53,7 +53,7 @@ func TestAuthenticationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, chatService, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "test"))
+	server := httptest.NewServer(httpapi.New(service, chatService, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "test"))
 	defer server.Close()
 
 	registerBody := protocolgo.RegisterPasswordRequest{

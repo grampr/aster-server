@@ -17,6 +17,7 @@ import (
 	protocolgo "github.com/grampr/Aster-protocol/packages/protocol-go/generated"
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
+	"github.com/grampr/aster-server/internal/community"
 	"github.com/grampr/aster-server/internal/gateway"
 )
 
@@ -25,6 +26,7 @@ const maxRequestBodyBytes = 64 << 10
 type Server struct {
 	auth           *auth.Service
 	chat           *chat.Service
+	community      *community.Service
 	gateway        *gateway.Service
 	logger         *slog.Logger
 	version        string
@@ -32,9 +34,9 @@ type Server struct {
 	loginLimiter   *fixedWindowLimiter
 }
 
-func New(authService *auth.Service, chatService *chat.Service, gatewayService *gateway.Service, logger *slog.Logger, version string) http.Handler {
+func New(authService *auth.Service, chatService *chat.Service, communityService *community.Service, gatewayService *gateway.Service, logger *slog.Logger, version string) http.Handler {
 	server := &Server{
-		auth: authService, chat: chatService, gateway: gatewayService, logger: logger, version: version,
+		auth: authService, chat: chatService, community: communityService, gateway: gatewayService, logger: logger, version: version,
 		requestLimiter: newFixedWindowLimiter(60, time.Minute),
 		loginLimiter:   newFixedWindowLimiter(5, 15*time.Minute),
 	}
@@ -66,6 +68,23 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}", server.deleteMessage)
 	mux.HandleFunc("PUT /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}", server.addMessageReaction)
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}", server.removeMessageReaction)
+	if communityService != nil {
+		mux.HandleFunc("GET /api/v1/guilds/{guild_id}/members", server.listGuildMembers)
+		mux.HandleFunc("GET /api/v1/guilds/{guild_id}/members/{user_id}", server.getGuildMember)
+		mux.HandleFunc("PATCH /api/v1/guilds/{guild_id}/members/{user_id}", server.updateGuildMember)
+		mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/members/{user_id}", server.removeGuildMember)
+		mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/members/@me", server.leaveGuild)
+		mux.HandleFunc("GET /api/v1/guilds/{guild_id}/roles", server.listGuildRoles)
+		mux.HandleFunc("POST /api/v1/guilds/{guild_id}/roles", server.createGuildRole)
+		mux.HandleFunc("PATCH /api/v1/guilds/{guild_id}/roles/{role_id}", server.updateGuildRole)
+		mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/roles/{role_id}", server.deleteGuildRole)
+		mux.HandleFunc("GET /api/v1/guilds/{guild_id}/invites", server.listGuildInvites)
+		mux.HandleFunc("POST /api/v1/guilds/{guild_id}/invites", server.createGuildInvite)
+		mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/invites/{invite_id}", server.deleteGuildInvite)
+		mux.HandleFunc("GET /api/v1/invites/{invite_code}", server.getInvite)
+		mux.HandleFunc("POST /api/v1/invites/{invite_code}/accept", server.acceptInvite)
+		mux.HandleFunc("PUT /api/v1/users/@me/presence", server.updateCurrentUserPresence)
+	}
 	return server.requestID(server.recoverPanic(mux))
 }
 

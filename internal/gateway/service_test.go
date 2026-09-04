@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/grampr/aster-server/internal/auth"
+	"github.com/grampr/aster-server/internal/community"
 )
 
 type fakeAuthenticator struct {
@@ -187,6 +188,35 @@ func TestGatewayPublishesTypingWithTypingIntent(t *testing.T) {
 	}
 	if payload.ChannelID != typing.ChannelID || payload.User.ID != userID || payload.User.DisplayName != "Alice" || !payload.StartedAt.Equal(startedAt) {
 		t.Fatalf("unexpected typing payload: %+v", payload)
+	}
+}
+
+func TestGatewayPublishesMemberAndPresenceEventsByIntent(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	guildID := uuid.MustParse("0198b8f0-2d6e-7c45-9a3f-92e3f2f3c1a0")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}})
+	server := httptest.NewServer(service)
+	defer server.Close()
+	connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	defer connection.Close()
+	assertOpcode(t, readGateway(t, connection), opHello)
+	writeGateway(t, connection, map[string]any{"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": intentGuildMembers | intentGuildPresences}})
+	assertDispatch(t, readGateway(t, connection), eventReady, 0)
+
+	updatedAt := time.Date(2026, time.September, 4, 2, 0, 0, 0, time.UTC)
+	presence := community.Presence{UserID: userID, Status: "ONLINE", UpdatedAt: updatedAt}
+	member := community.Member{GuildID: guildID, User: community.UserSummary{ID: userID, DisplayName: "Alice"}, RoleIDs: []uuid.UUID{}, JoinedAt: updatedAt, Presence: presence}
+	service.PublishMemberJoin([]uuid.UUID{userID}, member)
+	assertDispatch(t, readGateway(t, connection), eventMemberJoin, 1)
+	service.PublishPresenceUpdate([]uuid.UUID{userID}, guildID, presence)
+	event := readGateway(t, connection)
+	assertDispatch(t, event, eventPresenceUpdate, 2)
+	var payload presenceUpdatePayload
+	if err := json.Unmarshal(event.D, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.GuildID != guildID || payload.Presence.UserID != userID || payload.Presence.Status != "ONLINE" {
+		t.Fatalf("unexpected presence payload: %+v", payload)
 	}
 }
 

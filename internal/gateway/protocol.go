@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/grampr/aster-server/internal/community"
 )
 
 const (
@@ -20,6 +21,8 @@ const (
 	intentMessageContent int64 = 1 << 4
 	intentReactions      int64 = 1 << 7
 	intentTyping         int64 = 1 << 9
+	intentGuildMembers   int64 = 1 << 1
+	intentGuildPresences int64 = 1 << 6
 )
 
 const (
@@ -31,6 +34,10 @@ const (
 	eventMessageReactionAdd    = "MESSAGE_REACTION_ADD"
 	eventMessageReactionRemove = "MESSAGE_REACTION_REMOVE"
 	eventTypingStart           = "TYPING_START"
+	eventMemberJoin            = "MEMBER_JOIN"
+	eventMemberUpdate          = "MEMBER_UPDATE"
+	eventMemberLeave           = "MEMBER_LEAVE"
+	eventPresenceUpdate        = "PRESENCE_UPDATE"
 )
 
 type inboundMessage struct {
@@ -139,6 +146,45 @@ type typingStartPayload struct {
 	ChannelID uuid.UUID   `json:"channel_id"`
 	User      userPayload `json:"user"`
 	StartedAt time.Time   `json:"started_at"`
+}
+
+type presencePayload struct {
+	UserID     uuid.UUID `json:"user_id"`
+	Status     string    `json:"status"`
+	CustomText *string   `json:"custom_text,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type guildMemberPayload struct {
+	GuildID  uuid.UUID       `json:"guild_id"`
+	User     userPayload     `json:"user"`
+	Nickname *string         `json:"nickname"`
+	RoleIDs  []uuid.UUID     `json:"role_ids"`
+	JoinedAt time.Time       `json:"joined_at"`
+	Presence presencePayload `json:"presence"`
+}
+
+type memberLeavePayload struct {
+	GuildID uuid.UUID `json:"guild_id"`
+	UserID  uuid.UUID `json:"user_id"`
+}
+
+type presenceUpdatePayload struct {
+	GuildID  uuid.UUID       `json:"guild_id"`
+	Presence presencePayload `json:"presence"`
+}
+
+func communityPresencePayload(value community.Presence) presencePayload {
+	return presencePayload{UserID: value.UserID, Status: value.Status, CustomText: value.CustomText, UpdatedAt: value.UpdatedAt}
+}
+
+func communityMemberPayload(value community.Member) guildMemberPayload {
+	return guildMemberPayload{
+		GuildID:  value.GuildID,
+		User:     userPayload{ID: value.User.ID, DisplayName: value.User.DisplayName, AvatarURL: value.User.AvatarURL},
+		Nickname: value.Nickname, RoleIDs: value.RoleIDs, JoinedAt: value.JoinedAt,
+		Presence: communityPresencePayload(value.Presence),
+	}
 }
 
 func messageEventPayload(message Message, includeContent bool) messagePayload {

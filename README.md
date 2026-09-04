@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reactionの永続化とWebSocket配信、入力中通知を提供します。
+現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Member、Presence、Role、Permission、Inviteの永続化とWebSocket配信を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -27,6 +27,15 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}` | Messageの取得、編集、削除 |
 | `PUT, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` | Reactionの追加と解除 |
 | `POST` | `/api/v1/channels/{channel_id}/typing` | 入力開始または継続の通知 |
+| `GET, PATCH, DELETE` | `/api/v1/guilds/{guild_id}/members/{user_id}` | Memberの取得、変更、削除 |
+| `GET` | `/api/v1/guilds/{guild_id}/members` | Member一覧を取得 |
+| `DELETE` | `/api/v1/guilds/{guild_id}/members/@me` | Guildから退出 |
+| `GET, POST` | `/api/v1/guilds/{guild_id}/roles` | Roleの一覧取得と作成 |
+| `PATCH, DELETE` | `/api/v1/guilds/{guild_id}/roles/{role_id}` | Roleの変更と削除 |
+| `GET, POST` | `/api/v1/guilds/{guild_id}/invites` | Inviteの一覧取得と作成 |
+| `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認 |
+| `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用して参加 |
+| `PUT` | `/api/v1/users/@me/presence` | Presenceを更新 |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
 
 一覧APIは不透明なCursorと`limit`を使用します。
@@ -71,6 +80,9 @@ Clientは`/gateway/v1`へ接続すると`HELLO`を受信し、Access TokenとInt
 
 `TYPING` Intentを購読したSessionには、Userの公開情報と通知時刻を含む`TYPING_START`を配信します。
 入力中通知はDatabaseへ保存せず、Clientが10秒で失効させます。
+
+`GUILD_MEMBERS` IntentにはMemberの参加、変更、退出を、`GUILD_PRESENCES` Intentには短命なPresence更新を配信します。
+PresenceはProcess Memoryに保存し、永続プロフィールとは分離します。
 
 `MESSAGE_CONTENT` IntentがないSessionでは、作成・更新Eventに含まれるMessage本文と返信元本文を`null`にします。
 投稿元のSessionも配信対象に含まれるため、ClientはMessage IDでREST ResponseとEventを重複排除します。
@@ -154,7 +166,6 @@ make test-integration
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
-- Guildへの招待・参加API、Member一覧、Role、Permissionは未実装です。
 - Category、DM、Thread、添付ファイルのAPIとGateway通知は未実装です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
