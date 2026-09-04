@@ -36,6 +36,7 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET, DELETE` | `/api/v1/attachments/{attachment_id}` | Attachment metadataの取得と削除 |
 | `POST` | `/api/v1/attachments/{attachment_id}/finalize` | Object metadataを照合してUploadを確定 |
 | `GET` | `/api/v1/attachments/{attachment_id}/content` | 権限確認後に短命Download URLへ移動 |
+| `POST` | `/api/v1/attachments/{attachment_id}/download-intents` | Web/Tauri向けの短命Download URLを発行 |
 | `GET, POST` | `/api/v1/channels/{channel_id}/voice` | Voice State一覧とVoice Channel参加 |
 | `PATCH, DELETE` | `/api/v1/voice/sessions/@me` | 自分のVoice State更新と退出 |
 | `GET, PATCH, DELETE` | `/api/v1/guilds/{guild_id}/members/{user_id}` | Memberの取得、変更、削除 |
@@ -120,6 +121,8 @@ Voiceも同様にControl PlaneだけをGo Backendが担当します。
 `CONNECT`と`STREAM` Permissionを確認し、Cloudflare RealtimeKitのMeetingとParticipantを作成して、Client SDK用TokenだけをClientへ返します。
 Cloudflare API TokenはServer内だけに置き、ClientやLogへ返しません。
 Provider固有処理は`ObjectStorage`と`VoiceProvider` InterfaceのAdapterへ分離しています。
+ローカルE2Eでは`ASTER_VOICE_PROVIDER=aster-local`を明示すると、第三者Credentialを使わずにClientのDevice CaptureとVoice State同期を検証できます。
+この開発専用Adapterは参加者間のMedia転送を行わず、本番では`cloudflare-realtimekit`を使用します。
 
 ## 認証データの境界
 
@@ -176,6 +179,7 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_GATEWAY_IDENTIFY_TIMEOUT` | `10s` | 接続後に`IDENTIFY`または`RESUME`を待つ時間 |
 | `ASTER_GATEWAY_SESSION_RETENTION` | `2m` | 切断したGateway SessionとEventを保持する時間 |
 | `ASTER_GATEWAY_ALLOWED_ORIGINS` | Local Vite/Tauri Origins | Cross-Origin WebSocketを許可するOriginのComma区切り一覧 |
+| `ASTER_HTTP_ALLOWED_ORIGINS` | Local Vite/Tauri Origins | REST APIのCross-Origin Requestを許可するOriginのComma区切り一覧 |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
 | `ASTER_OBJECT_STORAGE_ENDPOINT` | なし | R2またはS3互換APIのEndpoint。未設定時はAttachment APIを無効化 |
 | `ASTER_OBJECT_STORAGE_REGION` | `auto` | S3署名に使用するRegion。R2は`auto` |
@@ -183,6 +187,7 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_OBJECT_STORAGE_ACCESS_KEY_ID` | なし | Server専用のObject Storage Access Key ID |
 | `ASTER_OBJECT_STORAGE_SECRET_ACCESS_KEY` | なし | Server専用のObject Storage Secret Access Key |
 | `ASTER_OBJECT_STORAGE_PATH_STYLE` | `false` | MinIO等でPath-style URLを使うか |
+| `ASTER_VOICE_PROVIDER` | なし | `cloudflare-realtimekit`または開発専用`aster-local`。Cloudflare設定時は自動選択 |
 | `ASTER_CLOUDFLARE_ACCOUNT_ID` | なし | RealtimeKitを所有するCloudflare Account ID |
 | `ASTER_CLOUDFLARE_REALTIME_APP_ID` | なし | RealtimeKit App ID |
 | `ASTER_CLOUDFLARE_API_TOKEN` | なし | Realtime権限を持つServer専用API Token |
@@ -203,6 +208,9 @@ PostgreSQL を使用する認証・Chat Lifecycle Test は、`ASTER_TEST_DATABAS
 ```bash
 make test-integration
 ```
+
+ローカルのAttachment・Voice E2E用依存サービスは`make local-deps-up`でPostgreSQLとMinIOを起動します。
+ServerをHost上で起動するときはObject Storage endpointに`http://127.0.0.1:9000`、Access Keyに`aster-local`、Secret Keyに`aster-local-secret`、Bucketに`aster-media`を指定し、`ASTER_VOICE_PROVIDER=aster-local`を指定します。
 
 ## 現在の制約
 

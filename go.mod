@@ -11,7 +11,7 @@ require (
 	github.com/aws/smithy-go v1.28.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260904030752-95321e075cc3
+	github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260904073049-045b0a2599c1
 	github.com/jackc/pgx/v5 v5.10.0
 	golang.org/x/crypto v0.55.0
 )

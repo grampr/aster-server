@@ -44,6 +44,11 @@ type UploadIntent struct {
 	ExpiresAt  time.Time
 }
 
+type DownloadIntent struct {
+	URL       string
+	ExpiresAt time.Time
+}
+
 type ObjectMetadata struct {
 	Size           int64
 	ContentType    string

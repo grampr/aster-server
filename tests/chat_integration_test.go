@@ -334,6 +334,10 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("unexpected attachment message event: %+v", event)
 	}
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/attachments/"+readyAttachment.Id.String(), nil, bobSession.AccessToken, http.StatusForbidden)
+	downloadIntent := requestJSON[protocolgo.AttachmentDownloadIntent](t, server.Client(), http.MethodPost, server.URL+"/api/v1/attachments/"+readyAttachment.Id.String()+"/download-intents", nil, bobSession.AccessToken, http.StatusOK)
+	if downloadIntent.DownloadUrl == "" || !downloadIntent.ExpiresAt.After(time.Now()) {
+		t.Fatalf("unexpected attachment download intent: %+v", downloadIntent)
+	}
 	downloadRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/attachments/"+readyAttachment.Id.String()+"/content", nil)
 	downloadRequest.Header.Set("Authorization", "Bearer "+bobSession.AccessToken)
 	noRedirectClient := *server.Client()

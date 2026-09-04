@@ -1,4 +1,4 @@
-.PHONY: check fmt test test-integration run docker-up docker-down
+.PHONY: check fmt test test-integration run docker-up docker-down local-deps-up local-deps-down
 
 check:
 	test -z "$$(gofmt -l .)"
@@ -23,3 +23,9 @@ docker-up:
 
 docker-down:
 	docker compose -f deployments/docker/compose.yaml down
+
+local-deps-up:
+	docker compose -f deployments/docker/compose.yaml up -d database object-storage object-storage-init
+
+local-deps-down:
+	docker compose -f deployments/docker/compose.yaml stop database object-storage

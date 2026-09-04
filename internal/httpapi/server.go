@@ -105,6 +105,7 @@ func NewWithMedia(authService *auth.Service, chatService *chat.Service, communit
 		mux.HandleFunc("GET /api/v1/attachments/{attachment_id}", server.getAttachment)
 		mux.HandleFunc("POST /api/v1/attachments/{attachment_id}/finalize", server.finalizeAttachment)
 		mux.HandleFunc("GET /api/v1/attachments/{attachment_id}/content", server.downloadAttachment)
+		mux.HandleFunc("POST /api/v1/attachments/{attachment_id}/download-intents", server.createAttachmentDownloadIntent)
 		mux.HandleFunc("DELETE /api/v1/attachments/{attachment_id}", server.deleteAttachment)
 	}
 	if voiceService != nil {

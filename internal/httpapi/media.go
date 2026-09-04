@@ -79,6 +79,23 @@ func (s *Server) downloadAttachment(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Location", location)
 	w.WriteHeader(http.StatusSeeOther)
 }
+
+func (s *Server) createAttachmentDownloadIntent(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.chatUser(w, r, "attachment_download_intents_create")
+	if !ok {
+		return
+	}
+	id, ok := s.pathID(w, r, "attachment_id")
+	if !ok {
+		return
+	}
+	intent, err := s.media.CreateDownloadIntent(r.Context(), user.ID, id)
+	if err != nil {
+		s.handleMediaError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocolgo.AttachmentDownloadIntent{DownloadUrl: intent.URL, ExpiresAt: intent.ExpiresAt})
+}
 func (s *Server) deleteAttachment(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.chatUser(w, r, "attachments_delete")
 	if !ok {

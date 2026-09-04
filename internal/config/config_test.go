@@ -24,6 +24,9 @@ func TestLoad(t *testing.T) {
 	if len(config.GatewayAllowedOrigins) != 4 {
 		t.Fatalf("unexpected gateway origins: %v", config.GatewayAllowedOrigins)
 	}
+	if len(config.HTTPAllowedOrigins) != 4 {
+		t.Fatalf("unexpected HTTP origins: %v", config.HTTPAllowedOrigins)
+	}
 }
 
 func TestLoadParsesGatewaySettings(t *testing.T) {
@@ -52,5 +55,25 @@ func TestLoadRejectsRefreshTTLShorterThanAccessTTL(t *testing.T) {
 	t.Setenv("ASTER_REFRESH_TOKEN_TTL", "1h")
 	if _, err := Load(); err == nil {
 		t.Fatal("refresh TTL shorter than access TTL must be rejected")
+	}
+}
+
+func TestLoadAllowsExplicitLocalVoiceProvider(t *testing.T) {
+	t.Setenv("ASTER_DATABASE_URL", "postgres://example")
+	t.Setenv("ASTER_VOICE_PROVIDER", "aster-local")
+	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.VoiceProvider != "aster-local" {
+		t.Fatalf("unexpected voice provider: %q", config.VoiceProvider)
+	}
+}
+
+func TestLoadRejectsCloudflareProviderWithoutCredentials(t *testing.T) {
+	t.Setenv("ASTER_DATABASE_URL", "postgres://example")
+	t.Setenv("ASTER_VOICE_PROVIDER", "cloudflare-realtimekit")
+	if _, err := Load(); err == nil {
+		t.Fatal("missing Cloudflare credentials must be rejected")
 	}
 }
