@@ -79,7 +79,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("expected HELLO, got %+v", message)
 	}
 	if err := gatewayConnection.WriteJSON(map[string]any{
-		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16},
+		"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 4 | 16 | 128 | 512},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -106,14 +106,27 @@ func TestChatLifecycle(t *testing.T) {
 	voiceChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
 		Type: protocolgo.VOICE, Name: "イベント会議",
 	}, aliceSession.AccessToken, http.StatusCreated)
+	otherTextChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
+		Type: protocolgo.TEXT, Name: "別の企画",
+	}, aliceSession.AccessToken, http.StatusCreated)
 	if textChannel.Position != 0 || voiceChannel.Position != 1 {
 		t.Fatalf("channels must receive stable positions: text=%d voice=%d", textChannel.Position, voiceChannel.Position)
 	}
+	requestJSON[struct{}](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/typing", nil, aliceSession.AccessToken, http.StatusNoContent)
+	assertTypingEvent(t, readGatewayMessage(t, gatewayConnection), textChannel.Id, alice.Id, "Alice")
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+voiceChannel.Id.String()+"/typing", nil, aliceSession.AccessToken, http.StatusNotFound)
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPatch, server.URL+"/api/v1/channels/"+textChannel.Id.String(), map[string]any{
 		"name": "変更不可",
 	}, bobSession.AccessToken, http.StatusForbidden)
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+voiceChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
 		Content: "voiceには送れない",
+	}, bobSession.AccessToken, http.StatusNotFound)
+	otherMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+otherTextChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
+		Content: "別チャンネルのMessage",
+	}, aliceSession.AccessToken, http.StatusCreated)
+	_ = readGatewayMessage(t, gatewayConnection)
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
+		Content: "別チャンネルには返信できない", ReplyToMessageId: &otherMessage.Id,
 	}, bobSession.AccessToken, http.StatusNotFound)
 
 	first := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
@@ -123,10 +136,60 @@ func TestChatLifecycle(t *testing.T) {
 	if firstEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, firstEvent) != first.Id {
 		t.Fatalf("unexpected first message event: %+v", firstEvent)
 	}
+	if len(first.Reactions) != 0 {
+		t.Fatalf("new message must have no reactions: %+v", first.Reactions)
+	}
+	reactionURL := server.URL + "/api/v1/channels/" + textChannel.Id.String() + "/messages/" + first.Id.String() + "/reactions/" + url.PathEscape("👍")
+	bobReaction := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodPut, reactionURL, nil, bobSession.AccessToken, http.StatusOK)
+	if bobReaction.Count != 1 || !bobReaction.Me || bobReaction.Emoji != "👍" {
+		t.Fatalf("unexpected first reaction: %+v", bobReaction)
+	}
+	assertReactionEvent(t, readGatewayMessage(t, gatewayConnection), "MESSAGE_REACTION_ADD", first.Id, bob.Id, 1)
+	duplicateReaction := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodPut, reactionURL, nil, bobSession.AccessToken, http.StatusOK)
+	if duplicateReaction.Count != 1 || !duplicateReaction.Me {
+		t.Fatalf("duplicate reaction must be idempotent: %+v", duplicateReaction)
+	}
+	aliceReaction := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodPut, reactionURL, nil, aliceSession.AccessToken, http.StatusOK)
+	if aliceReaction.Count != 2 || !aliceReaction.Me {
+		t.Fatalf("unexpected second user reaction: %+v", aliceReaction)
+	}
+	assertReactionEvent(t, readGatewayMessage(t, gatewayConnection), "MESSAGE_REACTION_ADD", first.Id, alice.Id, 2)
+	messageWithReactions := requestJSON[protocolgo.Message](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+first.Id.String(), nil, bobSession.AccessToken, http.StatusOK)
+	if len(messageWithReactions.Reactions) != 1 || messageWithReactions.Reactions[0].Count != 2 || !messageWithReactions.Reactions[0].Me {
+		t.Fatalf("message reaction summary is incorrect: %+v", messageWithReactions.Reactions)
+	}
+	removedReaction := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodDelete, reactionURL, nil, bobSession.AccessToken, http.StatusOK)
+	if removedReaction.Count != 1 || removedReaction.Me {
+		t.Fatalf("unexpected removed reaction: %+v", removedReaction)
+	}
+	assertReactionEvent(t, readGatewayMessage(t, gatewayConnection), "MESSAGE_REACTION_REMOVE", first.Id, bob.Id, 1)
+	duplicateRemoval := requestJSON[protocolgo.MessageReaction](t, server.Client(), http.MethodDelete, reactionURL, nil, bobSession.AccessToken, http.StatusOK)
+	if duplicateRemoval.Count != 1 || duplicateRemoval.Me {
+		t.Fatalf("duplicate removal must be idempotent: %+v", duplicateRemoval)
+	}
 	second := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "2つ目",
+		Content: "2つ目", ReplyToMessageId: &first.Id,
 	}, bobSession.AccessToken, http.StatusCreated)
-	_ = readGatewayMessage(t, gatewayConnection)
+	secondEvent := readGatewayMessage(t, gatewayConnection)
+	if secondEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, secondEvent) != second.Id {
+		t.Fatalf("unexpected reply event: %+v", secondEvent)
+	}
+	if second.ReplyToMessageId == nil || *second.ReplyToMessageId != first.Id || second.ReplyTo == nil || second.ReplyTo.Content != first.Content {
+		t.Fatalf("message reply was not resolved: %+v", second)
+	}
+	var secondEventData struct {
+		ReplyToMessageID *uuid.UUID `json:"reply_to_message_id"`
+		ReplyTo          *struct {
+			ID      uuid.UUID `json:"id"`
+			Content *string   `json:"content"`
+		} `json:"reply_to"`
+	}
+	if err := json.Unmarshal(secondEvent.Data, &secondEventData); err != nil {
+		t.Fatal(err)
+	}
+	if secondEventData.ReplyToMessageID == nil || *secondEventData.ReplyToMessageID != first.Id || secondEventData.ReplyTo == nil || secondEventData.ReplyTo.Content == nil || *secondEventData.ReplyTo.Content != first.Content {
+		t.Fatalf("gateway reply was not resolved: %+v", secondEventData)
+	}
 	third := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
 		Content: "3つ目",
 	}, bobSession.AccessToken, http.StatusCreated)
@@ -164,11 +227,15 @@ func TestChatLifecycle(t *testing.T) {
 	if cleared.Description != nil {
 		t.Fatalf("explicit null must clear description: %+v", cleared)
 	}
-	requestJSON[struct{}](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, aliceSession.AccessToken, http.StatusNoContent)
-	if event := readGatewayMessage(t, gatewayConnection); event.Type != "MESSAGE_DELETE" || gatewayMessageID(t, event) != second.Id {
+	requestJSON[struct{}](t, server.Client(), http.MethodDelete, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+first.Id.String(), nil, aliceSession.AccessToken, http.StatusNoContent)
+	if event := readGatewayMessage(t, gatewayConnection); event.Type != "MESSAGE_DELETE" || gatewayMessageID(t, event) != first.Id {
 		t.Fatalf("unexpected message delete event: %+v", event)
 	}
-	requestJSON[protocolgo.Error](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, bobSession.AccessToken, http.StatusNotFound)
+	requestJSON[protocolgo.Error](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+first.Id.String(), nil, bobSession.AccessToken, http.StatusNotFound)
+	replyAfterDelete := requestJSON[protocolgo.Message](t, server.Client(), http.MethodGet, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages/"+second.Id.String(), nil, bobSession.AccessToken, http.StatusOK)
+	if replyAfterDelete.ReplyToMessageId == nil || *replyAfterDelete.ReplyToMessageId != first.Id || replyAfterDelete.ReplyTo != nil {
+		t.Fatalf("deleted reply source must keep only its ID: %+v", replyAfterDelete)
+	}
 }
 
 func registerTestUser(t *testing.T, server *httptest.Server, email, displayName string) protocolgo.SessionTokenResponse {
@@ -205,4 +272,38 @@ func gatewayMessageID(t *testing.T, message integrationGatewayMessage) uuid.UUID
 		t.Fatal(err)
 	}
 	return data.ID
+}
+
+func assertReactionEvent(t *testing.T, message integrationGatewayMessage, eventType string, messageID, userID uuid.UUID, count int) {
+	t.Helper()
+	var data struct {
+		MessageID uuid.UUID `json:"message_id"`
+		UserID    uuid.UUID `json:"user_id"`
+		Emoji     string    `json:"emoji"`
+		Count     int       `json:"count"`
+	}
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != eventType || data.MessageID != messageID || data.UserID != userID || data.Emoji != "👍" || data.Count != count {
+		t.Fatalf("unexpected reaction event: type=%s data=%+v", message.Type, data)
+	}
+}
+
+func assertTypingEvent(t *testing.T, message integrationGatewayMessage, channelID, userID uuid.UUID, displayName string) {
+	t.Helper()
+	var data struct {
+		ChannelID uuid.UUID `json:"channel_id"`
+		User      struct {
+			ID          uuid.UUID `json:"id"`
+			DisplayName string    `json:"display_name"`
+		} `json:"user"`
+		StartedAt time.Time `json:"started_at"`
+	}
+	if err := json.Unmarshal(message.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != "TYPING_START" || data.ChannelID != channelID || data.User.ID != userID || data.User.DisplayName != displayName || data.StartedAt.IsZero() {
+		t.Fatalf("unexpected typing event: type=%s data=%+v", message.Type, data)
+	}
 }

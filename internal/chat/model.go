@@ -51,6 +51,24 @@ type UserSummary struct {
 }
 
 type Message struct {
+	ID               uuid.UUID
+	ChannelID        uuid.UUID
+	Author           UserSummary
+	Content          string
+	ReplyToMessageID *uuid.UUID
+	ReplyTo          *MessageReply
+	Reactions        []MessageReaction
+	CreatedAt        time.Time
+	EditedAt         *time.Time
+}
+
+type MessageReaction struct {
+	Emoji string
+	Count int
+	Me    bool
+}
+
+type MessageReply struct {
 	ID        uuid.UUID
 	ChannelID uuid.UUID
 	Author    UserSummary
@@ -122,5 +140,7 @@ type Store interface {
 	GetMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) (Message, error)
 	UpdateMessage(ctx context.Context, authorID, channelID, messageID uuid.UUID, content string, editedAt time.Time) (Message, error)
 	DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error
+	AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string, createdAt time.Time) (MessageReaction, bool, error)
+	RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error)
 	ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
 }

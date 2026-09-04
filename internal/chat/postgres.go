@@ -243,27 +243,35 @@ func (s *PostgresStore) DeleteChannel(ctx context.Context, ownerID, channelID uu
 }
 
 func (s *PostgresStore) CreateMessage(ctx context.Context, message Message) (Message, error) {
-	err := s.pool.QueryRow(ctx, `
+	err := scanMessage(s.pool.QueryRow(ctx, `
 		WITH inserted AS (
-			INSERT INTO messages (id, channel_id, author_id, content, created_at)
-			SELECT $1, c.id, $3, $4, $5
+			INSERT INTO messages (id, channel_id, author_id, content, reply_to_message_id, created_at)
+			SELECT $1, c.id, $3, $4, $5, $6
 			FROM channels c
 			JOIN guild_members gm ON gm.guild_id = c.guild_id
+			LEFT JOIN messages reply ON reply.id = $5 AND reply.channel_id = c.id
 			WHERE c.id = $2 AND c.type = 'TEXT' AND gm.user_id = $3
-			RETURNING id, channel_id, author_id, content, created_at, edited_at
+			  AND ($5::uuid IS NULL OR reply.id IS NOT NULL)
+			RETURNING id, channel_id, author_id, content, reply_to_message_id, created_at, edited_at
 		)
-		SELECT i.id, i.channel_id, u.id, u.display_name, u.avatar_url, i.content, i.created_at, i.edited_at
-		FROM inserted i JOIN users u ON u.id = i.author_id`,
-		message.ID, message.ChannelID, message.Author.ID, message.Content, message.CreatedAt,
-	).Scan(
-		&message.ID, &message.ChannelID, &message.Author.ID, &message.Author.DisplayName,
-		&message.Author.AvatarURL, &message.Content, &message.CreatedAt, &message.EditedAt,
-	)
+		SELECT i.id, i.channel_id, u.id, u.display_name, u.avatar_url, i.content,
+		       i.reply_to_message_id, i.created_at, i.edited_at,
+		       reply.id, reply.channel_id, reply_author.id, reply_author.display_name,
+		       reply_author.avatar_url, reply.content, reply.created_at, reply.edited_at
+		FROM inserted i
+		JOIN users u ON u.id = i.author_id
+		LEFT JOIN messages reply ON reply.id = i.reply_to_message_id AND reply.channel_id = i.channel_id
+		LEFT JOIN users reply_author ON reply_author.id = reply.author_id`,
+		message.ID, message.ChannelID, message.Author.ID, message.Content, message.ReplyToMessageID, message.CreatedAt,
+	), &message)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
 	if err != nil {
 		return Message{}, fmt.Errorf("create message: %w", err)
+	}
+	if err := s.populateMessageReactions(ctx, message.Author.ID, &message); err != nil {
+		return Message{}, err
 	}
 	return message, nil
 }
@@ -275,11 +283,16 @@ func (s *PostgresStore) ListMessages(ctx context.Context, userID, channelID uuid
 		cursorTime, cursorID = &cursor.Time, cursor.ID
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.id, m.channel_id, u.id, u.display_name, u.avatar_url, m.content, m.created_at, m.edited_at
+		SELECT m.id, m.channel_id, u.id, u.display_name, u.avatar_url, m.content,
+		       m.reply_to_message_id, m.created_at, m.edited_at,
+		       reply.id, reply.channel_id, reply_author.id, reply_author.display_name,
+		       reply_author.avatar_url, reply.content, reply.created_at, reply.edited_at
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id AND c.type = 'TEXT'
 		JOIN guild_members gm ON gm.guild_id = c.guild_id AND gm.user_id = $2
 		JOIN users u ON u.id = m.author_id
+		LEFT JOIN messages reply ON reply.id = m.reply_to_message_id AND reply.channel_id = m.channel_id
+		LEFT JOIN users reply_author ON reply_author.id = reply.author_id
 		WHERE m.channel_id = $1
 		  AND ($3::timestamptz IS NULL OR (m.created_at, m.id) < ($3, $4))
 		ORDER BY m.created_at DESC, m.id DESC
@@ -313,52 +326,70 @@ func (s *PostgresStore) ListMessages(ctx context.Context, userID, channelID uuid
 			return nil, ErrNotFound
 		}
 	}
+	messagePointers := make([]*Message, len(items))
+	for index := range items {
+		messagePointers[index] = &items[index]
+	}
+	if err := s.populateMessageReactions(ctx, userID, messagePointers...); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
 func (s *PostgresStore) GetMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) (Message, error) {
 	var message Message
-	err := s.pool.QueryRow(ctx, `
-		SELECT m.id, m.channel_id, u.id, u.display_name, u.avatar_url, m.content, m.created_at, m.edited_at
+	err := scanMessage(s.pool.QueryRow(ctx, `
+		SELECT m.id, m.channel_id, u.id, u.display_name, u.avatar_url, m.content,
+		       m.reply_to_message_id, m.created_at, m.edited_at,
+		       reply.id, reply.channel_id, reply_author.id, reply_author.display_name,
+		       reply_author.avatar_url, reply.content, reply.created_at, reply.edited_at
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id AND c.type = 'TEXT'
 		JOIN guild_members gm ON gm.guild_id = c.guild_id
 		JOIN users u ON u.id = m.author_id
+		LEFT JOIN messages reply ON reply.id = m.reply_to_message_id AND reply.channel_id = m.channel_id
+		LEFT JOIN users reply_author ON reply_author.id = reply.author_id
 		WHERE m.id = $1 AND m.channel_id = $2 AND gm.user_id = $3`, messageID, channelID, userID,
-	).Scan(
-		&message.ID, &message.ChannelID, &message.Author.ID, &message.Author.DisplayName,
-		&message.Author.AvatarURL, &message.Content, &message.CreatedAt, &message.EditedAt,
-	)
+	), &message)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
 	if err != nil {
 		return Message{}, fmt.Errorf("get message: %w", err)
 	}
+	if err := s.populateMessageReactions(ctx, userID, &message); err != nil {
+		return Message{}, err
+	}
 	return message, nil
 }
 
 func (s *PostgresStore) UpdateMessage(ctx context.Context, authorID, channelID, messageID uuid.UUID, content string, editedAt time.Time) (Message, error) {
 	var message Message
-	err := s.pool.QueryRow(ctx, `
+	err := scanMessage(s.pool.QueryRow(ctx, `
 		WITH updated AS (
 			UPDATE messages
 			SET content = $4, edited_at = $5
 			WHERE id = $1 AND channel_id = $2 AND author_id = $3
-			RETURNING id, channel_id, author_id, content, created_at, edited_at
+			RETURNING id, channel_id, author_id, content, reply_to_message_id, created_at, edited_at
 		)
-		SELECT m.id, m.channel_id, u.id, u.display_name, u.avatar_url, m.content, m.created_at, m.edited_at
-		FROM updated m JOIN users u ON u.id = m.author_id`,
+		SELECT m.id, m.channel_id, u.id, u.display_name, u.avatar_url, m.content,
+		       m.reply_to_message_id, m.created_at, m.edited_at,
+		       reply.id, reply.channel_id, reply_author.id, reply_author.display_name,
+		       reply_author.avatar_url, reply.content, reply.created_at, reply.edited_at
+		FROM updated m
+		JOIN users u ON u.id = m.author_id
+		LEFT JOIN messages reply ON reply.id = m.reply_to_message_id AND reply.channel_id = m.channel_id
+		LEFT JOIN users reply_author ON reply_author.id = reply.author_id`,
 		messageID, channelID, authorID, content, editedAt,
-	).Scan(
-		&message.ID, &message.ChannelID, &message.Author.ID, &message.Author.DisplayName,
-		&message.Author.AvatarURL, &message.Content, &message.CreatedAt, &message.EditedAt,
-	)
+	), &message)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
 	if err != nil {
 		return Message{}, fmt.Errorf("update message: %w", err)
+	}
+	if err := s.populateMessageReactions(ctx, authorID, &message); err != nil {
+		return Message{}, err
 	}
 	return message, nil
 }
@@ -383,6 +414,102 @@ func (s *PostgresStore) DeleteMessage(ctx context.Context, userID, channelID, me
 			return ErrForbidden
 		}
 		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string, createdAt time.Time) (MessageReaction, bool, error) {
+	return s.changeMessageReaction(ctx, userID, channelID, messageID, emoji, func(tx pgx.Tx) (bool, bool, error) {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO message_reactions (message_id, user_id, emoji, created_at)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT DO NOTHING`, messageID, userID, emoji, createdAt)
+		return tag.RowsAffected() == 1, true, err
+	})
+}
+
+func (s *PostgresStore) RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error) {
+	return s.changeMessageReaction(ctx, userID, channelID, messageID, emoji, func(tx pgx.Tx) (bool, bool, error) {
+		tag, err := tx.Exec(ctx, `
+			DELETE FROM message_reactions
+			WHERE message_id = $1 AND user_id = $2 AND emoji = $3`, messageID, userID, emoji)
+		return tag.RowsAffected() == 1, false, err
+	})
+}
+
+func (s *PostgresStore) changeMessageReaction(
+	ctx context.Context,
+	userID, channelID, messageID uuid.UUID,
+	emoji string,
+	change func(pgx.Tx) (changed bool, me bool, err error),
+) (MessageReaction, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return MessageReaction{}, false, fmt.Errorf("begin message reaction change: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM messages m
+			JOIN channels c ON c.id = m.channel_id AND c.type = 'TEXT'
+			JOIN guild_members gm ON gm.guild_id = c.guild_id AND gm.user_id = $3
+			WHERE m.id = $1 AND m.channel_id = $2
+		)`, messageID, channelID, userID).Scan(&exists); err != nil {
+		return MessageReaction{}, false, fmt.Errorf("check message reaction target: %w", err)
+	}
+	if !exists {
+		return MessageReaction{}, false, ErrNotFound
+	}
+	changed, me, err := change(tx)
+	if err != nil {
+		return MessageReaction{}, false, fmt.Errorf("change message reaction: %w", err)
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM message_reactions WHERE message_id = $1 AND emoji = $2`, messageID, emoji).Scan(&count); err != nil {
+		return MessageReaction{}, false, fmt.Errorf("count message reactions: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return MessageReaction{}, false, fmt.Errorf("commit message reaction change: %w", err)
+	}
+	return MessageReaction{Emoji: emoji, Count: count, Me: me}, changed, nil
+}
+
+func (s *PostgresStore) populateMessageReactions(ctx context.Context, userID uuid.UUID, messages ...*Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	messageByID := make(map[uuid.UUID]*Message, len(messages))
+	messageIDs := make([]uuid.UUID, 0, len(messages))
+	for _, message := range messages {
+		message.Reactions = []MessageReaction{}
+		messageByID[message.ID] = message
+		messageIDs = append(messageIDs, message.ID)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT message_id, emoji, count(*)::int, bool_or(user_id = $2)
+		FROM message_reactions
+		WHERE message_id = ANY($1)
+		GROUP BY message_id, emoji
+		ORDER BY message_id, emoji`, messageIDs, userID)
+	if err != nil {
+		return fmt.Errorf("list message reactions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var messageID uuid.UUID
+		var reaction MessageReaction
+		if err := rows.Scan(&messageID, &reaction.Emoji, &reaction.Count, &reaction.Me); err != nil {
+			return fmt.Errorf("scan message reaction: %w", err)
+		}
+		if message := messageByID[messageID]; message != nil {
+			message.Reactions = append(message.Reactions, reaction)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate message reactions: %w", err)
 	}
 	return nil
 }
@@ -421,8 +548,26 @@ func scanChannel(row rowScanner, channel *Channel) error {
 }
 
 func scanMessage(row rowScanner, message *Message) error {
-	return row.Scan(
+	var replyID, replyChannelID, replyAuthorID *uuid.UUID
+	var replyDisplayName, replyAvatarURL, replyContent *string
+	var replyCreatedAt, replyEditedAt *time.Time
+	err := row.Scan(
 		&message.ID, &message.ChannelID, &message.Author.ID, &message.Author.DisplayName,
-		&message.Author.AvatarURL, &message.Content, &message.CreatedAt, &message.EditedAt,
+		&message.Author.AvatarURL, &message.Content, &message.ReplyToMessageID, &message.CreatedAt, &message.EditedAt,
+		&replyID, &replyChannelID, &replyAuthorID, &replyDisplayName,
+		&replyAvatarURL, &replyContent, &replyCreatedAt, &replyEditedAt,
 	)
+	if err != nil {
+		return err
+	}
+	if replyID == nil {
+		message.ReplyTo = nil
+		return nil
+	}
+	message.ReplyTo = &MessageReply{
+		ID: *replyID, ChannelID: *replyChannelID,
+		Author:  UserSummary{ID: *replyAuthorID, DisplayName: *replyDisplayName, AvatarURL: replyAvatarURL},
+		Content: *replyContent, CreatedAt: *replyCreatedAt, EditedAt: replyEditedAt,
+	}
+	return nil
 }

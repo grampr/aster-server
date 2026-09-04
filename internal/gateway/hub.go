@@ -166,6 +166,55 @@ func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID 
 	}
 }
 
+func (h *hub) publishMessageReaction(eventName string, recipients []uuid.UUID, reaction MessageReaction) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+
+	payload := messageReactionPayload{
+		MessageID: reaction.MessageID, ChannelID: reaction.ChannelID, UserID: reaction.UserID,
+		Emoji: reaction.Emoji, Count: reaction.Count,
+	}
+	seen := make(map[uuid.UUID]struct{}, len(recipients))
+	for _, userID := range recipients {
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		for _, s := range h.sessionsByUser[userID] {
+			if s.intents&intentReactions != 0 {
+				h.dispatchLocked(s, eventName, payload)
+			}
+		}
+	}
+}
+
+func (h *hub) publishTypingStart(recipients []uuid.UUID, typing TypingStart) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+
+	payload := typingStartPayload{
+		ChannelID: typing.ChannelID,
+		User: userPayload{
+			ID: typing.User.ID, DisplayName: typing.User.DisplayName, AvatarURL: typing.User.AvatarURL,
+		},
+		StartedAt: typing.StartedAt,
+	}
+	seen := make(map[uuid.UUID]struct{}, len(recipients))
+	for _, userID := range recipients {
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		for _, s := range h.sessionsByUser[userID] {
+			if s.intents&intentTyping != 0 {
+				h.dispatchLocked(s, eventTypingStart, payload)
+			}
+		}
+	}
+}
+
 func (h *hub) dispatchLocked(s *session, eventName string, data any) bool {
 	s.sequence++
 	sequence := s.sequence

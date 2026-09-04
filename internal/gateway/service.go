@@ -183,6 +183,18 @@ func (s *Service) PublishMessageDelete(recipients []uuid.UUID, messageID, channe
 	s.hub.publishMessageDelete(recipients, messageID, channelID)
 }
 
+func (s *Service) PublishMessageReaction(recipients []uuid.UUID, add bool, reaction MessageReaction) {
+	eventName := eventMessageReactionRemove
+	if add {
+		eventName = eventMessageReactionAdd
+	}
+	s.hub.publishMessageReaction(eventName, recipients, reaction)
+}
+
+func (s *Service) PublishTypingStart(recipients []uuid.UUID, typing TypingStart) {
+	s.hub.publishTypingStart(recipients, typing)
+}
+
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {
 	messageType, payload, err := client.connection.ReadMessage()
 	if err != nil {

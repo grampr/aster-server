@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -188,6 +189,17 @@ func (s *Service) GetChannel(ctx context.Context, userID, channelID uuid.UUID) (
 	return s.store.GetChannel(ctx, userID, channelID)
 }
 
+func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) error {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	if channel.Type != ChannelTypeText {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID, input UpdateChannelInput) (Channel, error) {
 	if input.Name == nil && !input.Topic.Set && input.Position == nil {
 		return Channel{}, &ValidationError{Field: "body", Message: "must contain at least one field"}
@@ -241,7 +253,7 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 	return s.store.DeleteChannel(ctx, userID, channelID)
 }
 
-func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string) (Message, error) {
+func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID) (Message, error) {
 	channel, err := s.store.GetChannel(ctx, userID, channelID)
 	if err != nil {
 		return Message{}, err
@@ -252,12 +264,21 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	if err := validateContent(content); err != nil {
 		return Message{}, err
 	}
+	if replyToMessageID != nil {
+		if *replyToMessageID == uuid.Nil {
+			return Message{}, &ValidationError{Field: "reply_to_message_id", Message: "must be a UUID"}
+		}
+		if _, err := s.store.GetMessage(ctx, userID, channelID, *replyToMessageID); err != nil {
+			return Message{}, err
+		}
+	}
 	id, err := newUUIDv7()
 	if err != nil {
 		return Message{}, err
 	}
 	return s.store.CreateMessage(ctx, Message{
-		ID: id, ChannelID: channelID, Author: UserSummary{ID: userID}, Content: content, CreatedAt: s.now().UTC(),
+		ID: id, ChannelID: channelID, Author: UserSummary{ID: userID}, Content: content,
+		ReplyToMessageID: replyToMessageID, CreatedAt: s.now().UTC(),
 	})
 }
 
@@ -309,6 +330,39 @@ func (s *Service) UpdateMessage(ctx context.Context, userID, channelID, messageI
 
 func (s *Service) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error {
 	return s.store.DeleteMessage(ctx, userID, channelID, messageID)
+}
+
+func (s *Service) AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error) {
+	if err := validateReactionEmoji(emoji); err != nil {
+		return MessageReaction{}, false, err
+	}
+	return s.store.AddMessageReaction(ctx, userID, channelID, messageID, emoji, s.now().UTC())
+}
+
+func (s *Service) RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error) {
+	if err := validateReactionEmoji(emoji); err != nil {
+		return MessageReaction{}, false, err
+	}
+	return s.store.RemoveMessageReaction(ctx, userID, channelID, messageID, emoji)
+}
+
+func validateReactionEmoji(emoji string) error {
+	if !utf8.ValidString(emoji) || utf8.RuneCountInString(emoji) < 1 || utf8.RuneCountInString(emoji) > 64 {
+		return &ValidationError{Field: "emoji", Message: "must contain 1 to 64 Unicode characters"}
+	}
+	hasEmojiSymbol := false
+	for _, character := range emoji {
+		if unicode.IsControl(character) || unicode.IsSpace(character) {
+			return &ValidationError{Field: "emoji", Message: "must not contain control or whitespace characters"}
+		}
+		if unicode.Is(unicode.So, character) || character == '\u20e3' {
+			hasEmojiSymbol = true
+		}
+	}
+	if !hasEmojiSymbol {
+		return &ValidationError{Field: "emoji", Message: "must be a Unicode emoji sequence"}
+	}
+	return nil
 }
 
 func (s *Service) ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {

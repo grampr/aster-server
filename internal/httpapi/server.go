@@ -60,9 +60,12 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}", server.deleteChannel)
 	mux.HandleFunc("GET /api/v1/channels/{channel_id}/messages", server.listMessages)
 	mux.HandleFunc("POST /api/v1/channels/{channel_id}/messages", server.createMessage)
+	mux.HandleFunc("POST /api/v1/channels/{channel_id}/typing", server.startTyping)
 	mux.HandleFunc("GET /api/v1/channels/{channel_id}/messages/{message_id}", server.getMessage)
 	mux.HandleFunc("PATCH /api/v1/channels/{channel_id}/messages/{message_id}", server.updateMessage)
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}", server.deleteMessage)
+	mux.HandleFunc("PUT /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}", server.addMessageReaction)
+	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}", server.removeMessageReaction)
 	return server.requestID(server.recoverPanic(mux))
 }
 

@@ -72,6 +72,9 @@ func TestGatewayIdentifyHeartbeatPublishAndResume(t *testing.T) {
 	if createdData.Content == nil || *createdData.Content != message.Content {
 		t.Fatalf("message content was not delivered: %+v", createdData)
 	}
+	if createdData.ReplyToMessageID == nil || createdData.ReplyTo == nil || createdData.ReplyTo.Content == nil || *createdData.ReplyTo.Content != message.ReplyTo.Content {
+		t.Fatalf("message reply was not delivered: %+v", createdData)
+	}
 
 	writeGateway(t, connection, map[string]any{"op": opHeartbeat, "d": 1})
 	assertOpcode(t, readGateway(t, connection), opHeartbeatAck)
@@ -118,6 +121,72 @@ func TestGatewayRedactsMessageContentWithoutIntent(t *testing.T) {
 	}
 	if payload.Content != nil {
 		t.Fatalf("content must be redacted without MESSAGE_CONTENT: %+v", payload)
+	}
+	if payload.ReplyTo == nil || payload.ReplyTo.Content != nil {
+		t.Fatalf("reply content must be redacted without MESSAGE_CONTENT: %+v", payload)
+	}
+}
+
+func TestGatewayPublishesReactionWithReactionIntent(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}})
+	server := httptest.NewServer(service)
+	defer server.Close()
+	connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	defer connection.Close()
+	assertOpcode(t, readGateway(t, connection), opHello)
+	writeGateway(t, connection, map[string]any{
+		"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": intentReactions},
+	})
+	assertDispatch(t, readGateway(t, connection), eventReady, 0)
+
+	reaction := MessageReaction{
+		MessageID: uuid.MustParse("0198b8f2-4f80-7e67-b250-b4051415e3c2"),
+		ChannelID: uuid.MustParse("0198b8f1-3e7f-7d56-a14f-a3f40304d2b1"),
+		UserID:    userID, Emoji: "👍", Count: 2,
+	}
+	service.PublishMessageReaction([]uuid.UUID{userID}, true, reaction)
+	event := readGateway(t, connection)
+	assertDispatch(t, event, eventMessageReactionAdd, 1)
+	var payload messageReactionPayload
+	if err := json.Unmarshal(event.D, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.MessageID != reaction.MessageID || payload.UserID != userID || payload.Emoji != "👍" || payload.Count != 2 {
+		t.Fatalf("unexpected reaction payload: %+v", payload)
+	}
+}
+
+func TestGatewayPublishesTypingWithTypingIntent(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}})
+	server := httptest.NewServer(service)
+	defer server.Close()
+	connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	defer connection.Close()
+	assertOpcode(t, readGateway(t, connection), opHello)
+	writeGateway(t, connection, map[string]any{
+		"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": intentTyping},
+	})
+	assertDispatch(t, readGateway(t, connection), eventReady, 0)
+
+	startedAt := time.Date(2026, time.August, 17, 6, 16, 0, 0, time.UTC)
+	typing := TypingStart{
+		ChannelID: uuid.MustParse("0198b8f1-3e7f-7d56-a14f-a3f40304d2b1"),
+		User: UserSummary{
+			ID: userID, DisplayName: "Alice",
+		},
+		StartedAt: startedAt,
+	}
+	service.PublishTypingStart([]uuid.UUID{userID}, typing)
+	event := readGateway(t, connection)
+	assertDispatch(t, event, eventTypingStart, 1)
+	var payload typingStartPayload
+	if err := json.Unmarshal(event.D, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ChannelID != typing.ChannelID || payload.User.ID != userID || payload.User.DisplayName != "Alice" || !payload.StartedAt.Equal(startedAt) {
+		t.Fatalf("unexpected typing payload: %+v", payload)
 	}
 }
 
@@ -218,11 +287,19 @@ func assertDispatch(t *testing.T, message wireMessage, event string, sequence in
 }
 
 func testMessage() Message {
+	replyID := uuid.MustParse("0198b8f0-1b72-73a2-a2ef-75cf3cd276d8")
 	return Message{
-		ID:        uuid.MustParse("0198b8f2-4f80-7e67-b250-b4051415e3c2"),
-		ChannelID: uuid.MustParse("0198b8f1-3e7f-7d56-a14f-a3f40304d2b1"),
-		Author:    UserSummary{ID: uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090"), DisplayName: "Alice"},
-		Content:   "10月24日で進める方向でよいでしょうか？", CreatedAt: time.Date(2026, 8, 17, 6, 12, 0, 0, time.UTC),
+		ID:               uuid.MustParse("0198b8f2-4f80-7e67-b250-b4051415e3c2"),
+		ChannelID:        uuid.MustParse("0198b8f1-3e7f-7d56-a14f-a3f40304d2b1"),
+		Author:           UserSummary{ID: uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090"), DisplayName: "Alice"},
+		Content:          "10月24日で進める方向でよいでしょうか？",
+		ReplyToMessageID: &replyID,
+		ReplyTo: &MessageReply{
+			ID: replyID, ChannelID: uuid.MustParse("0198b8f1-3e7f-7d56-a14f-a3f40304d2b1"),
+			Author:  UserSummary{ID: uuid.MustParse("0198b8ed-7ba1-7165-b028-9ecf14ed1e7b"), DisplayName: "Bob"},
+			Content: "10月24日で進めませんか？", CreatedAt: time.Date(2026, 8, 17, 6, 10, 0, 0, time.UTC),
+		},
+		CreatedAt: time.Date(2026, 8, 17, 6, 12, 0, 0, time.UTC),
 	}
 }
 

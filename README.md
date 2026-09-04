@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在はPassword認証、Aster Session、Guild・Channel・Messageの永続化、Message EventのWebSocket配信を提供します。
+現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reactionの永続化とWebSocket配信、入力中通知を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -25,10 +25,19 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}` | Channelの取得、変更、削除 |
 | `GET, POST` | `/api/v1/channels/{channel_id}/messages` | Messageの一覧取得と投稿 |
 | `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}` | Messageの取得、編集、削除 |
+| `PUT, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` | Reactionの追加と解除 |
+| `POST` | `/api/v1/channels/{channel_id}/typing` | 入力開始または継続の通知 |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
 
 一覧APIは不透明なCursorと`limit`を使用します。
 Guildは参加順、Channelは`position`順、Messageは新しい順で安定してPageを返します。
+
+Message投稿時に`reply_to_message_id`を指定すると、同じText Channel内のMessageへ返信できます。
+Serverは返信元の表示用情報をResponseとGateway Eventへ含めます。
+返信元を削除した後もIDを保持し、表示用情報を`null`にするため、Clientは返信元を表示できない状態を判別できます。
+
+ReactionはMessage、User、Unicode絵文字の組を一意に保存します。
+同じ追加または解除を繰り返しても件数は変化せず、APIは操作後の件数と認証済みUser自身の状態を返します。
 
 ## Chatの暫定権限
 
@@ -55,7 +64,15 @@ Clientは`/gateway/v1`へ接続すると`HELLO`を受信し、Access TokenとInt
 - `MESSAGE_UPDATE`
 - `MESSAGE_DELETE`
 
-`MESSAGE_CONTENT` IntentがないSessionでは、作成・更新Eventの`content`を`null`にします。
+`REACTIONS` Intentを購読したSessionには、操作後の件数を含む次のEventを配信します。
+
+- `MESSAGE_REACTION_ADD`
+- `MESSAGE_REACTION_REMOVE`
+
+`TYPING` Intentを購読したSessionには、Userの公開情報と通知時刻を含む`TYPING_START`を配信します。
+入力中通知はDatabaseへ保存せず、Clientが10秒で失効させます。
+
+`MESSAGE_CONTENT` IntentがないSessionでは、作成・更新Eventに含まれるMessage本文と返信元本文を`null`にします。
 投稿元のSessionも配信対象に含まれるため、ClientはMessage IDでREST ResponseとEventを重複排除します。
 
 Dispatch EventのSequenceと直近EventはProcess Memoryへ保持します。
