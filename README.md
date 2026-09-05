@@ -195,6 +195,8 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_CLOUDFLARE_REALTIME_VOICE_PRESET` | `group_call_participant` | `SPEAK`あり・`STREAM`なしのParticipantへ適用するPreset |
 | `ASTER_CLOUDFLARE_REALTIME_STREAM_PRESET` | `group_call_host` | `STREAM`ありのParticipantへ適用するPreset |
 
+Cloudflare側のApp、API Token、Presetを準備し、2クライアントの実通信を確認する手順は[RealtimeKit運用・E2E手順](docs/realtimekit.md)を参照してください。
+
 ## 検証
 
 単体テスト、Race Detector、静的検査を実行します。
