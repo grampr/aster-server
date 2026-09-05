@@ -123,18 +123,23 @@ func (s *Service) Finalize(ctx context.Context, userID, attachmentID uuid.UUID) 
 }
 
 func (s *Service) DownloadURL(ctx context.Context, userID, attachmentID uuid.UUID) (string, error) {
+	intent, err := s.CreateDownloadIntent(ctx, userID, attachmentID)
+	return intent.URL, err
+}
+
+func (s *Service) CreateDownloadIntent(ctx context.Context, userID, attachmentID uuid.UUID) (DownloadIntent, error) {
 	attachment, err := s.Get(ctx, userID, attachmentID)
 	if err != nil {
-		return "", err
+		return DownloadIntent{}, err
 	}
 	if attachment.Status != StatusReady {
-		return "", ErrNotFound
+		return DownloadIntent{}, ErrNotFound
 	}
 	url, err := s.objects.PresignGet(ctx, attachment.ObjectKey, s.downloadTTL)
 	if err != nil {
-		return "", fmt.Errorf("presign attachment download: %w", err)
+		return DownloadIntent{}, fmt.Errorf("presign attachment download: %w", err)
 	}
-	return url, nil
+	return DownloadIntent{URL: url, ExpiresAt: s.now().UTC().Add(s.downloadTTL)}, nil
 }
 
 func (s *Service) Delete(ctx context.Context, userID, attachmentID uuid.UUID) error {

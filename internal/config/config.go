@@ -20,6 +20,7 @@ type Config struct {
 	GatewayIdentifyTimeout  time.Duration
 	GatewaySessionRetention time.Duration
 	GatewayAllowedOrigins   []string
+	HTTPAllowedOrigins      []string
 	AutoMigrate             bool
 	ObjectStorageEndpoint   string
 	ObjectStorageRegion     string
@@ -27,6 +28,7 @@ type Config struct {
 	ObjectStorageAccessKey  string
 	ObjectStorageSecretKey  string
 	ObjectStoragePathStyle  bool
+	VoiceProvider           string
 	RealtimeAccountID       string
 	RealtimeAppID           string
 	RealtimeAPIToken        string
@@ -47,7 +49,9 @@ func Load() (Config, error) {
 		GatewayIdentifyTimeout:  10 * time.Second,
 		GatewaySessionRetention: 2 * time.Minute,
 		GatewayAllowedOrigins:   splitCSV(envOrDefault("ASTER_GATEWAY_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,tauri://localhost,http://tauri.localhost")),
+		HTTPAllowedOrigins:      splitCSV(envOrDefault("ASTER_HTTP_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,tauri://localhost,http://tauri.localhost")),
 		ObjectStorageEndpoint:   os.Getenv("ASTER_OBJECT_STORAGE_ENDPOINT"), ObjectStorageRegion: envOrDefault("ASTER_OBJECT_STORAGE_REGION", "auto"), ObjectStorageBucket: os.Getenv("ASTER_OBJECT_STORAGE_BUCKET"), ObjectStorageAccessKey: os.Getenv("ASTER_OBJECT_STORAGE_ACCESS_KEY_ID"), ObjectStorageSecretKey: os.Getenv("ASTER_OBJECT_STORAGE_SECRET_ACCESS_KEY"),
+		VoiceProvider:     strings.ToLower(strings.TrimSpace(os.Getenv("ASTER_VOICE_PROVIDER"))),
 		RealtimeAccountID: os.Getenv("ASTER_CLOUDFLARE_ACCOUNT_ID"), RealtimeAppID: os.Getenv("ASTER_CLOUDFLARE_REALTIME_APP_ID"), RealtimeAPIToken: os.Getenv("ASTER_CLOUDFLARE_API_TOKEN"), RealtimeListenerPreset: envOrDefault("ASTER_CLOUDFLARE_REALTIME_LISTENER_PRESET", "group_call_listener"), RealtimeVoicePreset: envOrDefault("ASTER_CLOUDFLARE_REALTIME_VOICE_PRESET", "group_call_participant"), RealtimeStreamPreset: envOrDefault("ASTER_CLOUDFLARE_REALTIME_STREAM_PRESET", "group_call_host"),
 	}
 	if config.DatabaseURL == "" {
@@ -86,6 +90,15 @@ func Load() (Config, error) {
 	realtimeValues := []string{config.RealtimeAccountID, config.RealtimeAppID, config.RealtimeAPIToken}
 	if anySet(realtimeValues) && !allSet(realtimeValues) {
 		return Config{}, errors.New("Cloudflare Realtime account, app, and API token values are required together")
+	}
+	if config.VoiceProvider == "" && allSet(realtimeValues) {
+		config.VoiceProvider = "cloudflare-realtimekit"
+	}
+	if config.VoiceProvider != "" && config.VoiceProvider != "cloudflare-realtimekit" && config.VoiceProvider != "aster-local" {
+		return Config{}, errors.New("ASTER_VOICE_PROVIDER must be cloudflare-realtimekit, aster-local, or empty")
+	}
+	if config.VoiceProvider == "cloudflare-realtimekit" && !allSet(realtimeValues) {
+		return Config{}, errors.New("Cloudflare Realtime credentials are required for ASTER_VOICE_PROVIDER=cloudflare-realtimekit")
 	}
 	if config.RefreshTokenTTL <= config.AccessTokenTTL {
 		return Config{}, errors.New("ASTER_REFRESH_TOKEN_TTL must be greater than ASTER_ACCESS_TOKEN_TTL")
