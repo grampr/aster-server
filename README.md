@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reactionの永続化とWebSocket配信、入力中通知を提供します。
+現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Member、Presence、Role、Permission、Invite、Category、DM、Thread、検索、既読位置、Attachment、Voice Stateの永続化とWebSocket配信を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -27,6 +27,27 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}` | Messageの取得、編集、削除 |
 | `PUT, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` | Reactionの追加と解除 |
 | `POST` | `/api/v1/channels/{channel_id}/typing` | 入力開始または継続の通知 |
+| `GET, POST` | `/api/v1/users/@me/channels` | DM Channelの一覧取得と作成 |
+| `GET, POST` | `/api/v1/channels/{channel_id}/threads` | Threadの一覧取得と作成 |
+| `GET` | `/api/v1/guilds/{guild_id}/messages/search` | Guild内Messageの検索 |
+| `GET` | `/api/v1/users/@me/read-states` | 自分の既読位置一覧を取得 |
+| `PUT` | `/api/v1/channels/{channel_id}/read-state` | Channelの既読位置を更新 |
+| `POST` | `/api/v1/channels/{channel_id}/attachments/intents` | 直接Upload用の短命URLを発行 |
+| `GET, DELETE` | `/api/v1/attachments/{attachment_id}` | Attachment metadataの取得と削除 |
+| `POST` | `/api/v1/attachments/{attachment_id}/finalize` | Object metadataを照合してUploadを確定 |
+| `GET` | `/api/v1/attachments/{attachment_id}/content` | 権限確認後に短命Download URLへ移動 |
+| `POST` | `/api/v1/attachments/{attachment_id}/download-intents` | Web/Tauri向けの短命Download URLを発行 |
+| `GET, POST` | `/api/v1/channels/{channel_id}/voice` | Voice State一覧とVoice Channel参加 |
+| `PATCH, DELETE` | `/api/v1/voice/sessions/@me` | 自分のVoice State更新と退出 |
+| `GET, PATCH, DELETE` | `/api/v1/guilds/{guild_id}/members/{user_id}` | Memberの取得、変更、削除 |
+| `GET` | `/api/v1/guilds/{guild_id}/members` | Member一覧を取得 |
+| `DELETE` | `/api/v1/guilds/{guild_id}/members/@me` | Guildから退出 |
+| `GET, POST` | `/api/v1/guilds/{guild_id}/roles` | Roleの一覧取得と作成 |
+| `PATCH, DELETE` | `/api/v1/guilds/{guild_id}/roles/{role_id}` | Roleの変更と削除 |
+| `GET, POST` | `/api/v1/guilds/{guild_id}/invites` | Inviteの一覧取得と作成 |
+| `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認 |
+| `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用して参加 |
+| `PUT` | `/api/v1/users/@me/presence` | Presenceを更新 |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
 
 一覧APIは不透明なCursorと`limit`を使用します。
@@ -39,16 +60,17 @@ Serverは返信元の表示用情報をResponseとGateway Eventへ含めます�
 ReactionはMessage、User、Unicode絵文字の組を一意に保存します。
 同じ追加または解除を繰り返しても件数は変化せず、APIは操作後の件数と認証済みUser自身の状態を返します。
 
-## Chatの暫定権限
+## Chatの権限
 
-RoleとPermissionのProtocolが追加されるまで、権限は次の最小ルールで運用します。
+Guild内の操作はRoleに設定したPermission bitで判定します。
 
 - Guild作成者をOwnerかつ最初のMemberにする
 - Guild MemberだけがGuild、Channel、Messageを参照できる
-- Guild OwnerだけがGuildとChannelを変更・削除できる
-- Guild MemberはText ChannelへMessageを投稿できる
+- `MANAGE_GUILD`または`MANAGE_CHANNELS`を持つMemberが対象Resourceを管理できる
+- `VIEW_CHANNEL`と`SEND_MESSAGES`を持つMemberがGuildのText ChannelとThreadを利用できる
 - MessageのAuthorだけが本文を編集できる
-- MessageのAuthorまたはGuild OwnerがMessageを削除できる
+- MessageのAuthorまたは`MANAGE_MESSAGES`を持つMemberがMessageを削除できる
+- DMは参加者だけが参照・投稿でき、他UserのMessageは削除できない
 
 存在しないResourceと、認証済みUserから参照できないResourceは、どちらも`404 NOT_FOUND`として返します。
 これにより、参加していないGuildやChannelの存在をAPIから推測できないようにします。
@@ -64,6 +86,10 @@ Clientは`/gateway/v1`へ接続すると`HELLO`を受信し、Access TokenとInt
 - `MESSAGE_UPDATE`
 - `MESSAGE_DELETE`
 
+DMのMessage Eventは`DIRECT_MESSAGES` Intentへ配信します。
+GuildのChannel変更は`GUILDS` Intentへ、DM Channel変更は`DIRECT_MESSAGES` Intentへ`CHANNEL_CREATE`、`CHANNEL_UPDATE`、`CHANNEL_DELETE`として配信します。
+既読位置の変更は、更新したUser自身の全Gateway Sessionへ`READ_STATE_UPDATE`として配信します。
+
 `REACTIONS` Intentを購読したSessionには、操作後の件数を含む次のEventを配信します。
 
 - `MESSAGE_REACTION_ADD`
@@ -72,12 +98,31 @@ Clientは`/gateway/v1`へ接続すると`HELLO`を受信し、Access TokenとInt
 `TYPING` Intentを購読したSessionには、Userの公開情報と通知時刻を含む`TYPING_START`を配信します。
 入力中通知はDatabaseへ保存せず、Clientが10秒で失効させます。
 
+`GUILD_MEMBERS` IntentにはMemberの参加、変更、退出を、`GUILD_PRESENCES` Intentには短命なPresence更新を配信します。
+PresenceはProcess Memoryに保存し、永続プロフィールとは分離します。
+
 `MESSAGE_CONTENT` IntentがないSessionでは、作成・更新Eventに含まれるMessage本文と返信元本文を`null`にします。
 投稿元のSessionも配信対象に含まれるため、ClientはMessage IDでREST ResponseとEventを重複排除します。
 
 Dispatch EventのSequenceと直近EventはProcess Memoryへ保持します。
 一時切断後は`RESUME`で最後に処理したSequenceを送り、保持期間とBufferの範囲内なら未処理Eventを再配信します。
 HeartbeatごとにAccess Tokenを再検証し、期限切れまたはRotation済みTokenの接続を終了します。
+
+`GUILD_VOICE_STATES` Intentには、参加、退出、Mute、Deafen、Camera、Screen Shareの変更を`VOICE_STATE_UPDATE`として配信します。
+
+## Media Plane
+
+AttachmentのFile BodyはAster Serverを経由しません。
+ServerはChannel権限、25 MiBのFile Size上限、Userごとの1 GiB保存量と20件の同時Pending Uploadを確認し、R2/S3互換Object Storageの署名付きPUT URLを発行します。
+PUTにはContent-Type、Content-Length、SHA-256 Checksumを署名対象として含め、Finalize時にHEAD結果と宣言値を照合します。
+DownloadもChannel権限を確認してから5分間の署名付きGET URLへRedirectします。
+
+Voiceも同様にControl PlaneだけをGo Backendが担当します。
+`CONNECT`と`STREAM` Permissionを確認し、Cloudflare RealtimeKitのMeetingとParticipantを作成して、Client SDK用TokenだけをClientへ返します。
+Cloudflare API TokenはServer内だけに置き、ClientやLogへ返しません。
+Provider固有処理は`ObjectStorage`と`VoiceProvider` InterfaceのAdapterへ分離しています。
+ローカルE2Eでは`ASTER_VOICE_PROVIDER=aster-local`を明示すると、第三者Credentialを使わずにClientのDevice CaptureとVoice State同期を検証できます。
+この開発専用Adapterは参加者間のMedia転送を行わず、本番では`cloudflare-realtimekit`を使用します。
 
 ## 認証データの境界
 
@@ -134,7 +179,21 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_GATEWAY_IDENTIFY_TIMEOUT` | `10s` | 接続後に`IDENTIFY`または`RESUME`を待つ時間 |
 | `ASTER_GATEWAY_SESSION_RETENTION` | `2m` | 切断したGateway SessionとEventを保持する時間 |
 | `ASTER_GATEWAY_ALLOWED_ORIGINS` | Local Vite/Tauri Origins | Cross-Origin WebSocketを許可するOriginのComma区切り一覧 |
+| `ASTER_HTTP_ALLOWED_ORIGINS` | Local Vite/Tauri Origins | REST APIのCross-Origin Requestを許可するOriginのComma区切り一覧 |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
+| `ASTER_OBJECT_STORAGE_ENDPOINT` | なし | R2またはS3互換APIのEndpoint。未設定時はAttachment APIを無効化 |
+| `ASTER_OBJECT_STORAGE_REGION` | `auto` | S3署名に使用するRegion。R2は`auto` |
+| `ASTER_OBJECT_STORAGE_BUCKET` | なし | Attachment Objectを保存するBucket |
+| `ASTER_OBJECT_STORAGE_ACCESS_KEY_ID` | なし | Server専用のObject Storage Access Key ID |
+| `ASTER_OBJECT_STORAGE_SECRET_ACCESS_KEY` | なし | Server専用のObject Storage Secret Access Key |
+| `ASTER_OBJECT_STORAGE_PATH_STYLE` | `false` | MinIO等でPath-style URLを使うか |
+| `ASTER_VOICE_PROVIDER` | なし | `cloudflare-realtimekit`または開発専用`aster-local`。Cloudflare設定時は自動選択 |
+| `ASTER_CLOUDFLARE_ACCOUNT_ID` | なし | RealtimeKitを所有するCloudflare Account ID |
+| `ASTER_CLOUDFLARE_REALTIME_APP_ID` | なし | RealtimeKit App ID |
+| `ASTER_CLOUDFLARE_API_TOKEN` | なし | Realtime権限を持つServer専用API Token |
+| `ASTER_CLOUDFLARE_REALTIME_LISTENER_PRESET` | `group_call_listener` | `CONNECT`のみのParticipantへ適用するPreset |
+| `ASTER_CLOUDFLARE_REALTIME_VOICE_PRESET` | `group_call_participant` | `SPEAK`あり・`STREAM`なしのParticipantへ適用するPreset |
+| `ASTER_CLOUDFLARE_REALTIME_STREAM_PRESET` | `group_call_host` | `STREAM`ありのParticipantへ適用するPreset |
 
 ## 検証
 
@@ -150,12 +209,14 @@ PostgreSQL を使用する認証・Chat Lifecycle Test は、`ASTER_TEST_DATABAS
 make test-integration
 ```
 
+ローカルのAttachment・Voice E2E用依存サービスは`make local-deps-up`でPostgreSQLとMinIOを起動します。
+ServerをHost上で起動するときはObject Storage endpointに`http://127.0.0.1:9000`、Access Keyに`aster-local`、Secret Keyに`aster-local-secret`、Bucketに`aster-media`を指定し、`ASTER_VOICE_PROVIDER=aster-local`を指定します。
+
 ## 現在の制約
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
-- Guildへの招待・参加API、Member一覧、Role、Permissionは未実装です。
-- Category、DM、Thread、添付ファイルのAPIとGateway通知は未実装です。
+- Avatar Uploadと大規模公開配信は未実装です。画面共有はVoice Session内の小規模配信として扱います。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。

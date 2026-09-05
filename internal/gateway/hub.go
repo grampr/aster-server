@@ -126,7 +126,7 @@ func (h *hub) detachLocked(s *session, connection *client) {
 	s.disconnectedAt = &now
 }
 
-func (h *hub) publishMessage(eventName string, recipients []uuid.UUID, message Message) {
+func (h *hub) publishMessage(eventName string, intent int64, recipients []uuid.UUID, message Message) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.pruneLocked()
@@ -138,7 +138,7 @@ func (h *hub) publishMessage(eventName string, recipients []uuid.UUID, message M
 		}
 		seen[userID] = struct{}{}
 		for _, s := range h.sessionsByUser[userID] {
-			if s.intents&intentGuildMessages == 0 {
+			if s.intents&intent == 0 {
 				continue
 			}
 			payload := messageEventPayload(message, s.intents&intentMessageContent != 0)
@@ -147,7 +147,7 @@ func (h *hub) publishMessage(eventName string, recipients []uuid.UUID, message M
 	}
 }
 
-func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID) {
+func (h *hub) publishMessageDelete(intent int64, recipients []uuid.UUID, messageID, channelID uuid.UUID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.pruneLocked()
@@ -159,7 +159,7 @@ func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID 
 		}
 		seen[userID] = struct{}{}
 		for _, s := range h.sessionsByUser[userID] {
-			if s.intents&intentGuildMessages != 0 {
+			if s.intents&intent != 0 {
 				h.dispatchLocked(s, eventMessageDelete, messageDeletePayload{ID: messageID, ChannelID: channelID})
 			}
 		}
@@ -212,6 +212,33 @@ func (h *hub) publishTypingStart(recipients []uuid.UUID, typing TypingStart) {
 				h.dispatchLocked(s, eventTypingStart, payload)
 			}
 		}
+	}
+}
+
+func (h *hub) publishForIntent(eventName string, intent int64, recipients []uuid.UUID, payload any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+	seen := make(map[uuid.UUID]struct{}, len(recipients))
+	for _, userID := range recipients {
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		for _, session := range h.sessionsByUser[userID] {
+			if session.intents&intent != 0 {
+				h.dispatchLocked(session, eventName, payload)
+			}
+		}
+	}
+}
+
+func (h *hub) publishForUser(eventName string, userID uuid.UUID, payload any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+	for _, session := range h.sessionsByUser[userID] {
+		h.dispatchLocked(session, eventName, payload)
 	}
 }
 

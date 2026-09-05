@@ -14,8 +14,11 @@ var (
 )
 
 const (
-	ChannelTypeText  = "TEXT"
-	ChannelTypeVoice = "VOICE"
+	ChannelTypeText     = "TEXT"
+	ChannelTypeVoice    = "VOICE"
+	ChannelTypeCategory = "CATEGORY"
+	ChannelTypeThread   = "THREAD"
+	ChannelTypeDirect   = "DIRECT"
 )
 
 type ValidationError struct {
@@ -35,13 +38,16 @@ type Guild struct {
 }
 
 type Channel struct {
-	ID        uuid.UUID
-	GuildID   uuid.UUID
-	Type      string
-	Name      string
-	Topic     *string
-	Position  int
-	CreatedAt time.Time
+	ID               uuid.UUID
+	GuildID          uuid.UUID
+	Type             string
+	Name             string
+	Topic            *string
+	Position         int
+	CreatedAt        time.Time
+	ParentID         *uuid.UUID
+	StarterMessageID *uuid.UUID
+	Recipients       []UserSummary
 }
 
 type UserSummary struct {
@@ -58,8 +64,21 @@ type Message struct {
 	ReplyToMessageID *uuid.UUID
 	ReplyTo          *MessageReply
 	Reactions        []MessageReaction
+	Attachments      []Attachment
 	CreatedAt        time.Time
 	EditedAt         *time.Time
+}
+
+type Attachment struct {
+	ID             uuid.UUID
+	UploaderID     uuid.UUID
+	ChannelID      uuid.UUID
+	Filename       string
+	ContentType    string
+	Size           int64
+	ChecksumSHA256 string
+	Status         string
+	CreatedAt      time.Time
 }
 
 type MessageReaction struct {
@@ -93,15 +112,41 @@ type UpdateGuildInput struct {
 }
 
 type CreateChannelInput struct {
-	Type  string
-	Name  string
-	Topic *string
+	Type     string
+	Name     string
+	Topic    *string
+	ParentID *uuid.UUID
 }
 
 type UpdateChannelInput struct {
 	Name     *string
 	Topic    OptionalString
 	Position *int
+	ParentID OptionalUUID
+}
+
+type OptionalUUID struct {
+	Set   bool
+	Value *uuid.UUID
+}
+
+type CreateThreadInput struct {
+	Name      string
+	MessageID *uuid.UUID
+}
+type ReadState struct {
+	ChannelID         uuid.UUID
+	LastReadMessageID *uuid.UUID
+	UpdatedAt         time.Time
+}
+type MessageSearchResult struct {
+	Message Message
+	Excerpt string
+}
+type MessageSearchInput struct {
+	Query     string
+	ChannelID *uuid.UUID
+	AuthorID  *uuid.UUID
 }
 
 type Page[T any] struct {
@@ -144,3 +189,27 @@ type Store interface {
 	RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error)
 	ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
 }
+
+type PermissionChecker interface {
+	HasPermission(context.Context, uuid.UUID, uuid.UUID, int64) (bool, error)
+}
+
+type TextStore interface {
+	IsDirectChannel(context.Context, uuid.UUID) (bool, error)
+	CreateDirectChannel(context.Context, uuid.UUID, uuid.UUID, Channel) (Channel, error)
+	ListDirectChannels(context.Context, uuid.UUID, *pageCursor, int) ([]Channel, error)
+	CreateThread(context.Context, uuid.UUID, uuid.UUID, Channel) (Channel, error)
+	ListThreads(context.Context, uuid.UUID, uuid.UUID, *pageCursor, int) ([]Channel, error)
+	SearchMessages(context.Context, uuid.UUID, uuid.UUID, MessageSearchInput, *pageCursor, int) ([]MessageSearchResult, error)
+	ListReadStates(context.Context, uuid.UUID) ([]ReadState, error)
+	UpdateReadState(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, time.Time) (ReadState, error)
+	CreateMessageWithAttachments(context.Context, Message, []uuid.UUID) (Message, error)
+}
+
+const (
+	permissionViewChannel    int64 = 1 << 0
+	permissionSendMessages   int64 = 1 << 1
+	permissionManageMessages int64 = 1 << 2
+	permissionManageChannels int64 = 1 << 3
+	permissionManageGuild    int64 = 1 << 4
+)

@@ -21,15 +21,36 @@ const (
 )
 
 type Service struct {
-	store Store
-	now   func() time.Time
+	store       Store
+	textStore   TextStore
+	permissions PermissionChecker
+	now         func() time.Time
 }
 
-func NewService(store Store) (*Service, error) {
+func NewService(store Store, permissionChecker ...PermissionChecker) (*Service, error) {
 	if store == nil {
 		return nil, errors.New("chat store is required")
 	}
-	return &Service{store: store, now: time.Now}, nil
+	service := &Service{store: store, now: time.Now}
+	service.textStore, _ = store.(TextStore)
+	if len(permissionChecker) > 0 {
+		service.permissions = permissionChecker[0]
+	}
+	return service, nil
+}
+
+func (s *Service) requirePermission(ctx context.Context, userID, guildID uuid.UUID, permission int64) error {
+	if s.permissions == nil {
+		return nil
+	}
+	allowed, err := s.permissions.HasPermission(ctx, userID, guildID, permission)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrForbidden
+	}
+	return nil
 }
 
 func (s *Service) CreateGuild(ctx context.Context, ownerID uuid.UUID, input CreateGuildInput) (Guild, error) {
@@ -95,7 +116,11 @@ func (s *Service) UpdateGuild(ctx context.Context, userID, guildID uuid.UUID, in
 	if err != nil {
 		return Guild{}, err
 	}
-	if current.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, guildID, permissionManageGuild); err != nil {
+			return Guild{}, err
+		}
+	} else if current.OwnerID != userID {
 		return Guild{}, ErrForbidden
 	}
 	if input.Name != nil {
@@ -120,7 +145,11 @@ func (s *Service) DeleteGuild(ctx context.Context, userID, guildID uuid.UUID) er
 	if err != nil {
 		return err
 	}
-	if guild.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, guildID, permissionManageGuild); err != nil {
+			return err
+		}
+	} else if guild.OwnerID != userID {
 		return ErrForbidden
 	}
 	return s.store.DeleteGuild(ctx, userID, guildID)
@@ -131,11 +160,15 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	if err != nil {
 		return Channel{}, err
 	}
-	if guild.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, guildID, permissionManageChannels); err != nil {
+			return Channel{}, err
+		}
+	} else if guild.OwnerID != userID {
 		return Channel{}, ErrForbidden
 	}
-	if input.Type != ChannelTypeText && input.Type != ChannelTypeVoice {
-		return Channel{}, &ValidationError{Field: "type", Message: "must be TEXT or VOICE"}
+	if input.Type != ChannelTypeText && input.Type != ChannelTypeVoice && input.Type != ChannelTypeCategory {
+		return Channel{}, &ValidationError{Field: "type", Message: "must be TEXT, VOICE, or CATEGORY"}
 	}
 	name, err := validateName("name", input.Name)
 	if err != nil {
@@ -145,19 +178,31 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	if err != nil {
 		return Channel{}, err
 	}
-	if input.Type == ChannelTypeVoice && topic != nil {
-		return Channel{}, &ValidationError{Field: "topic", Message: "must be omitted for a VOICE channel"}
+	if input.Type != ChannelTypeText && topic != nil {
+		return Channel{}, &ValidationError{Field: "topic", Message: "is only supported for a TEXT channel"}
+	}
+	if input.ParentID != nil {
+		parent, err := s.store.GetChannel(ctx, userID, *input.ParentID)
+		if err != nil || parent.GuildID != guildID || parent.Type != ChannelTypeCategory {
+			return Channel{}, &ValidationError{Field: "parent_id", Message: "must identify a category in the same guild"}
+		}
 	}
 	id, err := newUUIDv7()
 	if err != nil {
 		return Channel{}, err
 	}
 	return s.store.CreateChannel(ctx, Channel{
-		ID: id, GuildID: guildID, Type: input.Type, Name: name, Topic: topic, CreatedAt: s.now().UTC(),
+		ID: id, GuildID: guildID, Type: input.Type, Name: name, Topic: topic, ParentID: input.ParentID, CreatedAt: s.now().UTC(),
 	})
 }
 
 func (s *Service) ListChannels(ctx context.Context, userID, guildID uuid.UUID, cursorValue string, limit int) (Page[Channel], error) {
+	if _, err := s.store.GetGuild(ctx, userID, guildID); err != nil {
+		return Page[Channel]{}, err
+	}
+	if err := s.requirePermission(ctx, userID, guildID, permissionViewChannel); err != nil {
+		return Page[Channel]{}, err
+	}
 	cursor, err := decodeCursor(cursorValue, cursorChannels)
 	if err != nil {
 		return Page[Channel]{}, err
@@ -186,7 +231,25 @@ func (s *Service) ListChannels(ctx context.Context, userID, guildID uuid.UUID, c
 }
 
 func (s *Service) GetChannel(ctx context.Context, userID, channelID uuid.UUID) (Channel, error) {
-	return s.store.GetChannel(ctx, userID, channelID)
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionViewChannel); err != nil {
+		return Channel{}, err
+	}
+	return channel, nil
+}
+
+func (s *Service) requireChannelPermission(ctx context.Context, userID uuid.UUID, channel Channel, permission int64) error {
+	if channel.Type == ChannelTypeDirect {
+		return nil
+	}
+	return s.requirePermission(ctx, userID, channel.GuildID, permission)
+}
+
+func messageCapableChannel(channelType string) bool {
+	return channelType == ChannelTypeText || channelType == ChannelTypeThread || channelType == ChannelTypeDirect
 }
 
 func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) error {
@@ -194,14 +257,61 @@ func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) 
 	if err != nil {
 		return err
 	}
-	if channel.Type != ChannelTypeText {
+	if !messageCapableChannel(channel.Type) {
 		return ErrNotFound
+	}
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionSendMessages); err != nil {
+		return err
 	}
 	return nil
 }
 
+func (s *Service) CanSendMessages(ctx context.Context, userID, channelID uuid.UUID) (Channel, error) {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if !messageCapableChannel(channel.Type) {
+		return Channel{}, ErrNotFound
+	}
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionSendMessages); err != nil {
+		return Channel{}, err
+	}
+	return channel, nil
+}
+
+func (s *Service) CanConnectVoice(ctx context.Context, userID, channelID uuid.UUID) (Channel, error) {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if channel.Type != ChannelTypeVoice {
+		return Channel{}, ErrNotFound
+	}
+	if err := s.requirePermission(ctx, userID, channel.GuildID, 1<<8); err != nil {
+		return Channel{}, err
+	}
+	return channel, nil
+}
+
+func (s *Service) CanStreamVoice(ctx context.Context, userID, channelID uuid.UUID) error {
+	channel, err := s.CanConnectVoice(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	return s.requirePermission(ctx, userID, channel.GuildID, 1<<10)
+}
+
+func (s *Service) CanSpeakVoice(ctx context.Context, userID, channelID uuid.UUID) error {
+	channel, err := s.CanConnectVoice(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	return s.requirePermission(ctx, userID, channel.GuildID, 1<<9)
+}
+
 func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID, input UpdateChannelInput) (Channel, error) {
-	if input.Name == nil && !input.Topic.Set && input.Position == nil {
+	if input.Name == nil && !input.Topic.Set && input.Position == nil && !input.ParentID.Set {
 		return Channel{}, &ValidationError{Field: "body", Message: "must contain at least one field"}
 	}
 	channel, err := s.store.GetChannel(ctx, userID, channelID)
@@ -212,7 +322,11 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return Channel{}, err
 	}
-	if guild.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, channel.GuildID, permissionManageChannels); err != nil {
+			return Channel{}, err
+		}
+	} else if guild.OwnerID != userID {
 		return Channel{}, ErrForbidden
 	}
 	if input.Name != nil {
@@ -235,6 +349,12 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 	if input.Position != nil && *input.Position < 0 {
 		return Channel{}, &ValidationError{Field: "position", Message: "must be zero or greater"}
 	}
+	if input.ParentID.Set && input.ParentID.Value != nil {
+		parent, err := s.store.GetChannel(ctx, userID, *input.ParentID.Value)
+		if err != nil || parent.GuildID != channel.GuildID || parent.Type != ChannelTypeCategory {
+			return Channel{}, &ValidationError{Field: "parent_id", Message: "must identify a category in the same guild"}
+		}
+	}
 	return s.store.UpdateChannel(ctx, userID, channelID, input, s.now().UTC())
 }
 
@@ -247,21 +367,28 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return err
 	}
-	if guild.OwnerID != userID {
+	if s.permissions != nil {
+		if err := s.requirePermission(ctx, userID, channel.GuildID, permissionManageChannels); err != nil {
+			return err
+		}
+	} else if guild.OwnerID != userID {
 		return ErrForbidden
 	}
 	return s.store.DeleteChannel(ctx, userID, channelID)
 }
 
-func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID) (Message, error) {
+func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID, attachmentIDs []uuid.UUID) (Message, error) {
 	channel, err := s.store.GetChannel(ctx, userID, channelID)
 	if err != nil {
 		return Message{}, err
 	}
-	if channel.Type != ChannelTypeText {
+	if !messageCapableChannel(channel.Type) {
 		return Message{}, ErrNotFound
 	}
-	if err := validateContent(content); err != nil {
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionSendMessages); err != nil {
+		return Message{}, err
+	}
+	if err := validateMessageBody(content, attachmentIDs); err != nil {
 		return Message{}, err
 	}
 	if replyToMessageID != nil {
@@ -276,13 +403,31 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return Message{}, err
 	}
-	return s.store.CreateMessage(ctx, Message{
+	message := Message{
 		ID: id, ChannelID: channelID, Author: UserSummary{ID: userID}, Content: content,
 		ReplyToMessageID: replyToMessageID, CreatedAt: s.now().UTC(),
-	})
+	}
+	if len(attachmentIDs) > 0 {
+		store, err := s.requireTextStore()
+		if err != nil {
+			return Message{}, err
+		}
+		return store.CreateMessageWithAttachments(ctx, message, attachmentIDs)
+	}
+	return s.store.CreateMessage(ctx, message)
 }
 
 func (s *Service) ListMessages(ctx context.Context, userID, channelID uuid.UUID, cursorValue string, limit int) (Page[Message], error) {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Page[Message]{}, err
+	}
+	if !messageCapableChannel(channel.Type) {
+		return Page[Message]{}, ErrNotFound
+	}
+	if err := s.requireChannelPermission(ctx, userID, channel, permissionViewChannel); err != nil {
+		return Page[Message]{}, err
+	}
 	cursor, err := decodeCursor(cursorValue, cursorMessages)
 	if err != nil {
 		return Page[Message]{}, err
@@ -329,6 +474,22 @@ func (s *Service) UpdateMessage(ctx context.Context, userID, channelID, messageI
 }
 
 func (s *Service) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error {
+	message, err := s.store.GetMessage(ctx, userID, channelID, messageID)
+	if err != nil {
+		return err
+	}
+	if message.Author.ID != userID {
+		channel, err := s.store.GetChannel(ctx, userID, channelID)
+		if err != nil {
+			return err
+		}
+		if channel.Type == ChannelTypeDirect {
+			return ErrForbidden
+		}
+		if err := s.requireChannelPermission(ctx, userID, channel, permissionManageMessages); err != nil {
+			return err
+		}
+	}
 	return s.store.DeleteMessage(ctx, userID, channelID, messageID)
 }
 
@@ -396,6 +557,29 @@ func validateContent(value string) error {
 	length := utf8.RuneCountInString(value)
 	if length < 1 || length > 4000 {
 		return &ValidationError{Field: "content", Message: "must contain between 1 and 4000 characters"}
+	}
+	return nil
+}
+
+func validateMessageBody(content string, attachmentIDs []uuid.UUID) error {
+	if len(attachmentIDs) == 0 {
+		return validateContent(content)
+	}
+	if utf8.RuneCountInString(content) > 4000 {
+		return &ValidationError{Field: "content", Message: "must contain at most 4000 characters"}
+	}
+	if len(attachmentIDs) > 10 {
+		return &ValidationError{Field: "attachment_ids", Message: "must contain at most 10 items"}
+	}
+	seen := make(map[uuid.UUID]struct{}, len(attachmentIDs))
+	for _, id := range attachmentIDs {
+		if id == uuid.Nil {
+			return &ValidationError{Field: "attachment_ids", Message: "must contain UUIDs"}
+		}
+		if _, ok := seen[id]; ok {
+			return &ValidationError{Field: "attachment_ids", Message: "must not contain duplicates"}
+		}
+		seen[id] = struct{}{}
 	}
 	return nil
 }
