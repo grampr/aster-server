@@ -133,7 +133,7 @@ func run(logger *slog.Logger) error {
 
 	httpServer := &http.Server{
 		Addr:              config.HTTPAddress,
-		Handler:           httpapi.New(authService, chatService, gatewayService, logger, version, httpapi.WithVoice(voiceService)),
+		Handler:           httpapi.New(authService, chatService, gatewayService, logger, version, httpapi.WithVoice(voiceService), httpapi.WithCORS(config.CORSAllowedOrigins)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

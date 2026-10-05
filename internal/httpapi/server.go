@@ -28,6 +28,7 @@ type Server struct {
 	chat           *chat.Service
 	gateway        *gateway.Service
 	voice          *voice.Service
+	corsOrigins    map[string]struct{}
 	logger         *slog.Logger
 	version        string
 	requestLimiter *fixedWindowLimiter
@@ -120,7 +121,7 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}", server.deleteMessage)
 	mux.HandleFunc("PUT /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}", server.addMessageReaction)
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}", server.removeMessageReaction)
-	return server.requestID(server.recoverPanic(mux))
+	return server.cors(server.requestID(server.recoverPanic(mux)))
 }
 
 func (s *Server) health(writer http.ResponseWriter, request *http.Request) {

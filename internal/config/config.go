@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// defaultClientOrigins are the origins of the local Vite dev server and the Tauri Desktop Client.
+const defaultClientOrigins = "http://localhost:5173,http://127.0.0.1:5173,tauri://localhost,http://tauri.localhost"
+
 type Config struct {
 	HTTPAddress             string
 	DatabaseURL             string
@@ -20,6 +23,7 @@ type Config struct {
 	GatewayIdentifyTimeout  time.Duration
 	GatewaySessionRetention time.Duration
 	GatewayAllowedOrigins   []string
+	CORSAllowedOrigins      []string
 	AutoMigrate             bool
 	Storage                 StorageConfig
 	Voice                   VoiceConfig
@@ -86,7 +90,8 @@ func Load() (Config, error) {
 		GatewayHeartbeat:        45 * time.Second,
 		GatewayIdentifyTimeout:  10 * time.Second,
 		GatewaySessionRetention: 2 * time.Minute,
-		GatewayAllowedOrigins:   splitCSV(envOrDefault("ASTER_GATEWAY_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,tauri://localhost,http://tauri.localhost")),
+		GatewayAllowedOrigins:   splitCSV(envOrDefault("ASTER_GATEWAY_ALLOWED_ORIGINS", defaultClientOrigins)),
+		CORSAllowedOrigins:      splitCSV(envOrDefault("ASTER_CORS_ALLOWED_ORIGINS", defaultClientOrigins)),
 	}
 	if config.DatabaseURL == "" {
 		return Config{}, errors.New("ASTER_DATABASE_URL is required")

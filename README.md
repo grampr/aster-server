@@ -311,6 +311,7 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_SMTP_FROM` | なし | 送信元（`Aster <no-reply@example.com>`など）。Addr設定時は必須 |
 | `ASTER_SMTP_USERNAME`、`ASTER_SMTP_PASSWORD` | なし | SMTP認証。両方設定するか、どちらも設定しない |
 | `ASTER_SMTP_TLS` | `starttls` | `starttls`、`tls`（465番など）、`none`（ローカル開発のみ） |
+| `ASTER_CORS_ALLOWED_ORIGINS` | Local Vite/Tauri Origins | REST APIをブラウザから呼べるOriginのComma区切り一覧。Bearer Tokenだけを使うためCredentialは許可せず、`*`も返しません |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
 
 ## 検証
