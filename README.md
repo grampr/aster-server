@@ -19,6 +19,15 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `POST` | `/api/v1/auth/token/refresh` | Refresh Token を交換する |
 | `POST` | `/api/v1/auth/logout` | 現在の Session を破棄する |
 | `GET` | `/api/v1/users/@me` | 認証済み User 自身を返す |
+| `POST` | `/api/v1/auth/google/authorize` | Google Loginを開始する。Access Token付きならGoogleのLink用 |
+| `GET` | `/api/v1/auth/google/callback` | Googleからの戻りを処理し、Deep Linkへ`302`する |
+| `POST` | `/api/v1/auth/google/exchange` | Exchange CodeとPKCE VerifierをAster Sessionへ交換する |
+| `POST` | `/api/v1/auth/google/link` | サインイン中のAccountへGoogle Identityを追加する |
+| `POST` | `/api/v1/auth/email/verification` | Email Addressの確認Emailを送る |
+| `POST` | `/api/v1/auth/email/verify` | Emailで届いたTokenで所有確認を完了する |
+| `POST` | `/api/v1/auth/password/reset-request` | Password再設定Emailを送る |
+| `POST` | `/api/v1/auth/password/reset` | Tokenで新しいPasswordを設定する |
+| `DELETE` | `/api/v1/users/@me/authentication-methods/{method}` | 認証方法（`PASSWORD`、`GOOGLE`）のLinkを解除する |
 | `GET, POST` | `/api/v1/guilds` | 参加Guildの一覧取得と作成 |
 | `GET, PATCH, DELETE` | `/api/v1/guilds/{guild_id}` | Guildの取得、変更、削除 |
 | `GET, POST` | `/api/v1/guilds/{guild_id}/channels` | Channelの一覧取得と作成 |
@@ -222,9 +231,33 @@ Refresh Token は使用するたびに交換します。
 Password は Argon2id の PHC 形式で保存します。
 既定値は OWASP の最低推奨値に対応する Memory 19 MiB、Iteration 2、Parallelism 1 です。
 
+## Google Login
+
+Desktop ClientはAuthorization Code FlowとPKCE `S256`でログインします。
+
+1. `POST /auth/google/authorize`でPKCE ChallengeとClient Stateを登録し、System Browserで開くGoogleのURLを受け取ります。ServerはGoogle向けの`state`と`nonce`を別に生成し、5分で失効する試行として保存します。
+2. Googleは`GET /auth/google/callback`へ戻します。Serverは`state`（一度だけ有効）を確認し、Authorization Codeを自分で交換して、ID Tokenの署名（Googleの公開鍵、RS256）、Issuer、Audience、有効期限、`nonce`を検証します。成功すると、1分間だけ有効なAster Exchange Codeと、Client Stateだけを`aster://auth/callback`へ`302`で返します。Googleのコードやトークンは含めません。`state`を検証できない場合はRedirectせず`400 INVALID_OAUTH_CALLBACK`です。
+3. `POST /auth/google/exchange`でExchange CodeとPKCE VerifierをAster Session Tokenへ交換します。Exchange CodeはVerifierが誤っていても使用済みになります。
+
+Googleの失敗は、`access_denied`（ユーザーが拒否）または`provider_error`（それ以外。Emailが未確認の場合を含む）とClient Stateだけを返し、詳細はServerのLogにだけ残します。
+初回のログインでは、確認済みのEmail AddressでUserを作ります。Google Identityは`GOOGLE`のSubjectで識別し、Emailが変わっても同じUserに入れます。
+同じEmail Addressを持つ既存Accountがある場合は、自動でLinkせずExchangeで`409 ACCOUNT_LINK_REQUIRED`を返します。
+
+**Link**: Access Token付きで`POST /auth/google/authorize`を呼ぶと、そのAccountへGoogleを追加する試行になります。Exchange Codeは`POST /auth/google/link`だけで、開始した本人が一度だけ使えます。通常のログインには使えません。別のAccountに使用済みのGoogle Identity、またはすでにGoogleをLinkしたAccountは`409 IDENTITY_ALREADY_LINKED`です。LinkしたGoogleがAccountと同じ確認済みEmailなら、`email_verified`も`true`になります。
+**Unlink**: `DELETE /users/@me/authentication-methods/{method}`で外せますが、最後の1つは`409 LAST_AUTHENTICATION_METHOD`で拒否します。
+
+## Email確認とPassword再設定
+
+Emailで送るTokenは推測できない値で、Hashだけを保存し、一度だけ使えます（確認は24時間、再設定は1時間）。Emailには確認コードと`aster://auth/verify-email`、`aster://auth/reset-password`のDeep Linkを入れます。
+
+- **確認**: `POST /auth/email/verification`が現在のAddressへ送り、`POST /auth/email/verify`で確認します。Tokenを送った後にAddressが変わると無効です。以前の未使用Tokenは、新しく送ると無効になります。
+- **再設定**: `POST /auth/password/reset-request`は、Accountの有無にかかわらず`202`を返します。Emailは非同期で送るため、応答時間からも判別できません。Password認証を持たないAccount（Googleだけ）には送りません。`POST /auth/password/reset`はPasswordの要件を先に確認し（誤入力でTokenを消費しません）、成功するとPasswordを更新し、そのUserの**全Session**を破棄して`email_verified`を`true`にします。
+- 同じUserへは1分に1通までで、超えた分は何も送らずに成功を返します。送信を伴う要求は、IPとUser（またはEmail）ごとに1時間5回までです。
+- `ASTER_SMTP_ADDR`が未設定なら、送信を伴う2つの要求は`503 MAIL_UNAVAILABLE`を返します。
+
 ## ローカル起動
 
-Docker Compose を使う場合は、PostgreSQL、MinIO（添付ファイル用）、LiveKit（Voice用）、Server をまとめて起動できます。
+Docker Compose を使う場合は、PostgreSQL、MinIO（添付ファイル用）、LiveKit（Voice用）、Mailpit（開発用のメール受信、画面は`http://localhost:8025`）、Server をまとめて起動できます。
 
 ```bash
 make docker-up
@@ -271,6 +304,13 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_VOICE_LIVEKIT_API_URL` | URLの`ws`を`http`に置換した値 | Serverが部屋の管理に使うLiveKitのHTTP URL |
 | `ASTER_VOICE_LIVEKIT_API_KEY` | なし | LiveKitのAPI Key。URL設定時は必須 |
 | `ASTER_VOICE_LIVEKIT_API_SECRET` | なし | LiveKitのAPI Secret。URL設定時は必須 |
+| `ASTER_GOOGLE_CLIENT_ID` | なし | Google OAuth ClientのID。未設定ならGoogle Loginを無効にする |
+| `ASTER_GOOGLE_CLIENT_SECRET` | なし | Google OAuth ClientのSecret。ID設定時は必須 |
+| `ASTER_GOOGLE_REDIRECT_URL` | なし | このServerの`/api/v1/auth/google/callback`の公開URL。GoogleへAuthorized redirect URIとして登録する。ID設定時は必須 |
+| `ASTER_SMTP_ADDR` | なし | SMTP Serverの`host:port`。未設定ならEmail確認とPassword再設定を無効にする |
+| `ASTER_SMTP_FROM` | なし | 送信元（`Aster <no-reply@example.com>`など）。Addr設定時は必須 |
+| `ASTER_SMTP_USERNAME`、`ASTER_SMTP_PASSWORD` | なし | SMTP認証。両方設定するか、どちらも設定しない |
+| `ASTER_SMTP_TLS` | `starttls` | `starttls`、`tls`（465番など）、`none`（ローカル開発のみ） |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
 
 ## 検証
@@ -290,7 +330,9 @@ make test-integration
 ## 現在の制約
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
-- Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
+- Googleとの実際の通信、SMTPサーバーとの結合は自動テストしていません。Google Loginは偽のProviderで、SMTPは最小のSMTPサーバーで検証しています。
+- Google Login用のAuthorization Codeには、ServerからGoogleへのPKCEを使っていません（Server側Clientは秘密を持つConfidential Clientのため）。
+- Passwordを持たないAccount（Googleだけ）へのPassword追加はできません。
 - Channel単位の権限上書きと、Message検索の全文Indexは未実装です。
 - LiveKitのAccess TokenはRFC 7515の公式ベクタでHS256署名を検証していますが、実際のLiveKitとの結合は自動テストしていません。
 - Object Storageへの署名付きURLはAWS公式のSigV4テストベクタで検証していますが、実際のS3やMinIOとの結合は自動テストしていません。Bucketには`PUT`を許可するCORS設定が必要です。

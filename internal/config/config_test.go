@@ -97,3 +97,30 @@ func TestLoadVoiceIsOptionalButAllOrNothing(t *testing.T) {
 		t.Fatalf("unexpected voice config: %v %+v", err, config.Voice)
 	}
 }
+
+func TestLoadGoogleAndSMTPAreOptionalButAllOrNothing(t *testing.T) {
+	t.Setenv("ASTER_DATABASE_URL", "postgres://example")
+	config, err := Load()
+	if err != nil || config.Google.Enabled() || config.SMTP.Enabled() {
+		t.Fatalf("both must be disabled by default: %v %+v %+v", err, config.Google, config.SMTP)
+	}
+
+	t.Setenv("ASTER_GOOGLE_CLIENT_ID", "id")
+	if _, err := Load(); err == nil {
+		t.Fatal("a Google client ID without a secret and redirect URL must be rejected")
+	}
+	t.Setenv("ASTER_GOOGLE_CLIENT_SECRET", "secret")
+	t.Setenv("ASTER_GOOGLE_REDIRECT_URL", "https://aster.example/api/v1/auth/google/callback")
+	if config, err = Load(); err != nil || !config.Google.Enabled() {
+		t.Fatalf("unexpected google config: %v %+v", err, config.Google)
+	}
+
+	t.Setenv("ASTER_SMTP_ADDR", "localhost:25")
+	if _, err := Load(); err == nil {
+		t.Fatal("an SMTP address without a sender must be rejected")
+	}
+	t.Setenv("ASTER_SMTP_FROM", "Aster <no-reply@example.com>")
+	if config, err = Load(); err != nil || !config.SMTP.Enabled() || config.SMTP.TLS != "starttls" {
+		t.Fatalf("unexpected smtp config: %v %+v", err, config.SMTP)
+	}
+}

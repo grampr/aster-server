@@ -15,6 +15,7 @@ import (
 	"github.com/grampr/aster-server/internal/config"
 	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
+	"github.com/grampr/aster-server/internal/mail"
 	"github.com/grampr/aster-server/internal/media"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
 	"github.com/grampr/aster-server/internal/voice"
@@ -63,6 +64,29 @@ func run(logger *slog.Logger) error {
 	)
 	if err != nil {
 		return err
+	}
+	if config.Google.Enabled() {
+		googleClient, err := auth.NewGoogleClient(auth.GoogleConfig{
+			ClientID: config.Google.ClientID, ClientSecret: config.Google.ClientSecret, RedirectURL: config.Google.RedirectURL,
+		})
+		if err != nil {
+			return err
+		}
+		authService.WithGoogle(googleClient)
+	} else {
+		logger.Warn("ASTER_GOOGLE_CLIENT_ID is not set; Google login is disabled")
+	}
+	if config.SMTP.Enabled() {
+		mailer, err := mail.NewSMTPMailer(mail.SMTPConfig{
+			Addr: config.SMTP.Addr, Username: config.SMTP.Username, Password: config.SMTP.Password,
+			From: config.SMTP.From, TLS: mail.TLSMode(config.SMTP.TLS),
+		})
+		if err != nil {
+			return err
+		}
+		authService.WithMailer(mailer, logger)
+	} else {
+		logger.Warn("ASTER_SMTP_ADDR is not set; email verification and password reset are disabled")
 	}
 	chatStore := chat.NewPostgresStore(pool)
 	chatService, err := chat.NewService(chatStore)

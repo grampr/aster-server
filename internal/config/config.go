@@ -23,7 +23,32 @@ type Config struct {
 	AutoMigrate             bool
 	Storage                 StorageConfig
 	Voice                   VoiceConfig
+	Google                  GoogleConfig
+	SMTP                    SMTPConfig
 }
+
+// SMTPConfig describes the mail server for verification and password reset email.
+// Those flows are disabled when Addr is empty.
+type SMTPConfig struct {
+	Addr     string
+	Username string
+	Password string
+	From     string
+	// TLS is "starttls" (default), "tls" or "none".
+	TLS string
+}
+
+func (c SMTPConfig) Enabled() bool { return c.Addr != "" }
+
+// GoogleConfig describes the Google OAuth client. Google Login is disabled when
+// ClientID is empty.
+type GoogleConfig struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+}
+
+func (c GoogleConfig) Enabled() bool { return c.ClientID != "" }
 
 // VoiceConfig describes the LiveKit server used for Voice Channels.
 // Voice is disabled when URL is empty.
@@ -111,6 +136,24 @@ func Load() (Config, error) {
 	}
 	if config.Voice.Enabled() && (config.Voice.APIKey == "" || config.Voice.APISecret == "") {
 		return Config{}, errors.New("ASTER_VOICE_LIVEKIT_API_KEY and ASTER_VOICE_LIVEKIT_API_SECRET are required when ASTER_VOICE_LIVEKIT_URL is set")
+	}
+	config.Google = GoogleConfig{
+		ClientID:     os.Getenv("ASTER_GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("ASTER_GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("ASTER_GOOGLE_REDIRECT_URL"),
+	}
+	if config.Google.Enabled() && (config.Google.ClientSecret == "" || config.Google.RedirectURL == "") {
+		return Config{}, errors.New("ASTER_GOOGLE_CLIENT_SECRET and ASTER_GOOGLE_REDIRECT_URL are required when ASTER_GOOGLE_CLIENT_ID is set")
+	}
+	config.SMTP = SMTPConfig{
+		Addr:     os.Getenv("ASTER_SMTP_ADDR"),
+		Username: os.Getenv("ASTER_SMTP_USERNAME"),
+		Password: os.Getenv("ASTER_SMTP_PASSWORD"),
+		From:     os.Getenv("ASTER_SMTP_FROM"),
+		TLS:      envOrDefault("ASTER_SMTP_TLS", "starttls"),
+	}
+	if config.SMTP.Enabled() && config.SMTP.From == "" {
+		return Config{}, errors.New("ASTER_SMTP_FROM is required when ASTER_SMTP_ADDR is set")
 	}
 	if config.RefreshTokenTTL <= config.AccessTokenTTL {
 		return Config{}, errors.New("ASTER_REFRESH_TOKEN_TTL must be greater than ASTER_ACCESS_TOKEN_TTL")

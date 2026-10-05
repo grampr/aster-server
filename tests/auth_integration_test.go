@@ -128,7 +128,7 @@ func requestJSON[Response any](t *testing.T, client *http.Client, method, url st
 		t.Fatalf("%s %s returned %d, expected %d: %s", method, url, response.StatusCode, expectedStatus, payload)
 	}
 	var result Response
-	if response.StatusCode != http.StatusNoContent {
+	if response.StatusCode != http.StatusNoContent && len(payload) > 0 {
 		if err := json.Unmarshal(payload, &result); err != nil {
 			t.Fatalf("decode response: %v: %s", err, payload)
 		}
