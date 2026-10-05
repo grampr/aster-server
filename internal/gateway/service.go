@@ -235,6 +235,13 @@ func (s *Service) PublishPresenceUpdate(recipients []uuid.UUID, guildID uuid.UUI
 	s.hub.publishToIntent(intentGuildPresences, eventPresenceUpdate, recipients, presenceUpdatePayload{GuildID: guildID, Presence: presenceEventPayload(presence)})
 }
 
+// PublishReadStateUpdate tells every Session of userID about its own read position.
+func (s *Service) PublishReadStateUpdate(userID uuid.UUID, state ReadState) {
+	s.hub.publishToUser(userID, eventReadStateUpdate, readStatePayload{
+		ChannelID: state.ChannelID, LastReadMessageID: state.LastReadMessageID, UpdatedAt: state.UpdatedAt,
+	})
+}
+
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {
 	messageType, payload, err := client.connection.ReadMessage()
 	if err != nil {

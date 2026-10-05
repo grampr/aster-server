@@ -157,6 +157,7 @@ type pageCursor struct {
 type Store interface {
 	MemberStore
 	RoleStore
+	ReadStateStore
 
 	CreateGuild(ctx context.Context, ownerID uuid.UUID, guild Guild) error
 	ListGuilds(ctx context.Context, userID uuid.UUID, cursor *pageCursor, limit int) ([]guildListRow, error)
@@ -272,4 +273,28 @@ type RoleStore interface {
 	UpdateRole(ctx context.Context, role Role) (Role, error)
 	DeleteRole(ctx context.Context, guildID, roleID uuid.UUID) error
 	SetMemberRoles(ctx context.Context, guildID, userID uuid.UUID, roleIDs []uuid.UUID) error
+}
+
+type ReadState struct {
+	ChannelID         uuid.UUID
+	LastReadMessageID *uuid.UUID
+	UpdatedAt         time.Time
+}
+
+type SearchInput struct {
+	Query     string
+	ChannelID *uuid.UUID
+	AuthorID  *uuid.UUID
+}
+
+type SearchResult struct {
+	Message Message
+	Excerpt string
+}
+
+// ReadStateStore persists read positions and searches Messages.
+type ReadStateStore interface {
+	UpdateReadState(ctx context.Context, userID, channelID, messageID uuid.UUID, now time.Time) (ReadState, bool, error)
+	ListReadStates(ctx context.Context, userID uuid.UUID) ([]ReadState, error)
+	SearchMessages(ctx context.Context, userID, guildID uuid.UUID, input SearchInput, cursor *pageCursor, limit int) ([]Message, error)
 }

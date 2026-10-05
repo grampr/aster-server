@@ -37,6 +37,9 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `PUT` | `/api/v1/users/@me/presence` | 自分のPresenceを更新する |
 | `GET, POST` | `/api/v1/channels/{channel_id}/threads` | Threadの一覧取得と作成 |
 | `GET, POST` | `/api/v1/users/@me/channels` | Direct Message Channelの一覧取得と開始 |
+| `PUT` | `/api/v1/channels/{channel_id}/read-state` | Channelの既読位置を更新する |
+| `GET` | `/api/v1/users/@me/read-states` | 自分の既読位置を取得する |
+| `GET` | `/api/v1/guilds/{guild_id}/messages/search` | Guild内のMessageを検索する |
 | `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認する |
 | `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用してGuildへ参加する |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
@@ -77,6 +80,19 @@ Channelの種類は`TEXT`、`VOICE`、`CATEGORY`、`THREAD`、`DIRECT`です。
 ThreadとDirect MessageのMessageにも、返信、Reaction、入力中通知を使えます。
 `CHANNEL_CREATE`、`CHANNEL_UPDATE`、`CHANNEL_DELETE`は、Guild Channelなら`GUILDS`、Direct Messageなら`DIRECT_MESSAGES`のIntentを購読したSessionへ配信します。
 Direct MessageのMessage Eventも`DIRECT_MESSAGES`で配信し、`GUILD_MESSAGES`には流しません。
+
+## 既読位置とMessage検索
+
+既読位置はUserとChannelごとに保存し、後方へは戻しません。
+Message投稿時刻が古い、または同じMessageを指定した場合は、保存済みの位置を変更せずに返し、Gateway Eventも送りません。
+最後に読んだMessageが削除された後は、残っている任意のMessageを新しい位置にできます。
+`GET /users/@me/read-states`は、参照できるText、Thread、Direct Messageを最大1000件返し、一度も読んでいないChannelの`last_read_message_id`は`null`です。
+`READ_STATE_UPDATE`はIntentに関係なく、本人のSessionだけへ配信します。
+
+Message検索は、Guild内のText ChannelとThreadの本文を大文字小文字を区別せずに部分一致で探し、新しい順に返します。
+検索語は2〜100文字で、`%`と`_`は通常の文字として扱います。`channel_id`と`author_id`で絞り込めます。
+`excerpt`は一致箇所の前後を最大約480文字で切り出したPlain Textです。
+検索は`ILIKE`のため大量のMessageでは遅くなります。全文検索Indexは未実装です。
 
 ## RoleとPermission
 
@@ -225,7 +241,7 @@ make test-integration
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
-- Channel単位の権限上書き、Message検索、Channel既読位置は未実装です。
+- Channel単位の権限上書きと、Message検索の全文Indexは未実装です。
 - 添付ファイル、Voice Channelのjoin・state APIとGateway通知は未実装です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。

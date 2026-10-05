@@ -32,6 +32,7 @@ const (
 	eventChannelCreate         = "CHANNEL_CREATE"
 	eventChannelUpdate         = "CHANNEL_UPDATE"
 	eventChannelDelete         = "CHANNEL_DELETE"
+	eventReadStateUpdate       = "READ_STATE_UPDATE"
 	eventMemberJoin            = "MEMBER_JOIN"
 	eventMemberUpdate          = "MEMBER_UPDATE"
 	eventMemberLeave           = "MEMBER_LEAVE"
@@ -290,4 +291,17 @@ func channelEventPayload(channel Channel) channelPayload {
 		ID: channel.ID, GuildID: channel.GuildID, ParentID: channel.ParentID, Type: channel.Type, Name: channel.Name,
 		Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt, Recipients: recipients,
 	}
+}
+
+// ReadState is a User's read position in one Channel.
+type ReadState struct {
+	ChannelID         uuid.UUID
+	LastReadMessageID *uuid.UUID
+	UpdatedAt         time.Time
+}
+
+type readStatePayload struct {
+	ChannelID         uuid.UUID  `json:"channel_id"`
+	LastReadMessageID *uuid.UUID `json:"last_read_message_id"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }

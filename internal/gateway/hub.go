@@ -243,6 +243,16 @@ func (h *hub) publishToIntent(intent int64, eventName string, recipients []uuid.
 	}
 }
 
+// publishToUser dispatches one payload to every Session of a User, whatever its intents.
+func (h *hub) publishToUser(userID uuid.UUID, eventName string, payload any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+	for _, s := range h.sessionsByUser[userID] {
+		h.dispatchLocked(s, eventName, payload)
+	}
+}
+
 func (h *hub) dispatchLocked(s *session, eventName string, data any) bool {
 	s.sequence++
 	sequence := s.sequence
