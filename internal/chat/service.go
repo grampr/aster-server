@@ -18,6 +18,8 @@ const (
 	cursorGuilds   = "guilds"
 	cursorChannels = "channels"
 	cursorMessages = "messages"
+	cursorThreads  = "threads"
+	cursorDirects  = "directs"
 )
 
 type Service struct {
@@ -127,8 +129,10 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	if _, err := s.require(ctx, userID, guildID, PermManageChannels); err != nil {
 		return Channel{}, err
 	}
-	if input.Type != ChannelTypeText && input.Type != ChannelTypeVoice {
-		return Channel{}, &ValidationError{Field: "type", Message: "must be TEXT or VOICE"}
+	switch input.Type {
+	case ChannelTypeText, ChannelTypeVoice, ChannelTypeCategory:
+	default:
+		return Channel{}, &ValidationError{Field: "type", Message: "must be TEXT, VOICE or CATEGORY"}
 	}
 	name, err := validateName("name", input.Name)
 	if err != nil {
@@ -138,16 +142,33 @@ func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, 
 	if err != nil {
 		return Channel{}, err
 	}
-	if input.Type == ChannelTypeVoice && topic != nil {
-		return Channel{}, &ValidationError{Field: "topic", Message: "must be omitted for a VOICE channel"}
+	if input.Type != ChannelTypeText && topic != nil {
+		return Channel{}, &ValidationError{Field: "topic", Message: "must be omitted for a " + input.Type + " channel"}
+	}
+	if input.ParentID != nil {
+		if input.Type == ChannelTypeCategory {
+			return Channel{}, &ValidationError{Field: "parent_id", Message: "must be omitted for a CATEGORY channel"}
+		}
+		if err := s.checkCategory(ctx, userID, guildID, *input.ParentID); err != nil {
+			return Channel{}, err
+		}
 	}
 	id, err := newUUIDv7()
 	if err != nil {
 		return Channel{}, err
 	}
 	return s.store.CreateChannel(ctx, Channel{
-		ID: id, GuildID: guildID, Type: input.Type, Name: name, Topic: topic, CreatedAt: s.now().UTC(),
+		ID: id, GuildID: &guildID, Type: input.Type, Name: &name, Topic: topic, ParentID: input.ParentID, CreatedAt: s.now().UTC(),
 	})
+}
+
+// checkCategory verifies that parentID names a Category of the same Guild.
+func (s *Service) checkCategory(ctx context.Context, userID, guildID, parentID uuid.UUID) error {
+	parent, err := s.store.GetChannel(ctx, userID, parentID)
+	if errors.Is(err, ErrNotFound) || (err == nil && (parent.Type != ChannelTypeCategory || parent.GuildID == nil || *parent.GuildID != guildID)) {
+		return &ValidationError{Field: "parent_id", Message: "must reference a category in this guild"}
+	}
+	return err
 }
 
 func (s *Service) ListChannels(ctx context.Context, userID, guildID uuid.UUID, cursorValue string, limit int) (Page[Channel], error) {
@@ -187,22 +208,28 @@ func (s *Service) StartTyping(ctx context.Context, userID, channelID uuid.UUID) 
 	if err != nil {
 		return err
 	}
-	if channel.Type != ChannelTypeText {
+	if !channel.IsText() {
 		return ErrNotFound
 	}
 	return nil
 }
 
 func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID, input UpdateChannelInput) (Channel, error) {
-	if input.Name == nil && !input.Topic.Set && input.Position == nil {
+	if input.Name == nil && !input.Topic.Set && input.Position == nil && !input.ParentID.Set {
 		return Channel{}, &ValidationError{Field: "body", Message: "must contain at least one field"}
 	}
 	channel, err := s.store.GetChannel(ctx, userID, channelID)
 	if err != nil {
 		return Channel{}, err
 	}
-	if _, err := s.require(ctx, userID, channel.GuildID, PermManageChannels); err != nil {
+	if channel.GuildID == nil {
+		return Channel{}, ErrForbidden
+	}
+	if _, err := s.require(ctx, userID, *channel.GuildID, PermManageChannels); err != nil {
 		return Channel{}, err
+	}
+	if channel.Type == ChannelTypeThread && (input.Topic.Set || input.Position != nil || input.ParentID.Set) {
+		return Channel{}, &ValidationError{Field: "body", Message: "only the name of a thread can be changed"}
 	}
 	if input.Name != nil {
 		value, err := validateName("name", *input.Name)
@@ -216,15 +243,27 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 		if err != nil {
 			return Channel{}, err
 		}
-		if channel.Type == ChannelTypeVoice && value != nil {
-			return Channel{}, &ValidationError{Field: "topic", Message: "must be null for a VOICE channel"}
+		if channel.Type != ChannelTypeText && value != nil {
+			return Channel{}, &ValidationError{Field: "topic", Message: "must be null for a " + channel.Type + " channel"}
 		}
 		input.Topic.Value = value
 	}
 	if input.Position != nil && *input.Position < 0 {
 		return Channel{}, &ValidationError{Field: "position", Message: "must be zero or greater"}
 	}
-	return s.store.UpdateChannel(ctx, userID, channelID, input, s.now().UTC())
+	if input.ParentID.Set && input.ParentID.Value != nil {
+		if channel.Type == ChannelTypeCategory {
+			return Channel{}, &ValidationError{Field: "parent_id", Message: "must be null for a CATEGORY channel"}
+		}
+		if err := s.checkCategory(ctx, userID, *channel.GuildID, *input.ParentID.Value); err != nil {
+			return Channel{}, err
+		}
+	}
+	updated, err := s.store.UpdateChannel(ctx, userID, channelID, input, s.now().UTC())
+	if err != nil {
+		return Channel{}, err
+	}
+	return updated, nil
 }
 
 func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID) error {
@@ -232,10 +271,107 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return err
 	}
-	if _, err := s.require(ctx, userID, channel.GuildID, PermManageChannels); err != nil {
+	if channel.GuildID == nil {
+		return ErrForbidden
+	}
+	if _, err := s.require(ctx, userID, *channel.GuildID, PermManageChannels); err != nil {
 		return err
 	}
 	return s.store.DeleteChannel(ctx, userID, channelID)
+}
+
+// CreateThread starts a Thread under a Text Channel, optionally from one of its Messages.
+func (s *Service) CreateThread(ctx context.Context, userID, parentID uuid.UUID, name string, messageID *uuid.UUID) (Channel, error) {
+	parent, err := s.store.GetChannel(ctx, userID, parentID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if parent.Type != ChannelTypeText || parent.GuildID == nil {
+		return Channel{}, ErrNotFound
+	}
+	if _, err := s.require(ctx, userID, *parent.GuildID, PermSendMessages); err != nil {
+		return Channel{}, err
+	}
+	name, err = validateName("name", name)
+	if err != nil {
+		return Channel{}, err
+	}
+	if messageID != nil {
+		if _, err := s.store.GetMessage(ctx, userID, parentID, *messageID); err != nil {
+			return Channel{}, err
+		}
+	}
+	id, err := newUUIDv7()
+	if err != nil {
+		return Channel{}, err
+	}
+	return s.store.CreateThread(ctx, Channel{ID: id, GuildID: parent.GuildID, Name: &name, ParentID: &parentID}, messageID, s.now().UTC())
+}
+
+func (s *Service) ListThreads(ctx context.Context, userID, parentID uuid.UUID, cursorValue string, limit int) (Page[Channel], error) {
+	cursor, err := decodeCursor(cursorValue, cursorThreads)
+	if err != nil {
+		return Page[Channel]{}, err
+	}
+	if err := validateLimit(limit); err != nil {
+		return Page[Channel]{}, err
+	}
+	rows, err := s.store.ListThreads(ctx, userID, parentID, cursor, limit+1)
+	if err != nil {
+		return Page[Channel]{}, err
+	}
+	return channelPage(rows, limit, cursorThreads)
+}
+
+// OpenDirectChannel returns the Direct Message with recipientID, creating it if needed.
+func (s *Service) OpenDirectChannel(ctx context.Context, userID, recipientID uuid.UUID) (Channel, bool, error) {
+	if recipientID == uuid.Nil {
+		return Channel{}, false, &ValidationError{Field: "recipient_id", Message: "must be a UUID"}
+	}
+	if recipientID == userID {
+		return Channel{}, false, &ValidationError{Field: "recipient_id", Message: "must be another user"}
+	}
+	id, err := newUUIDv7()
+	if err != nil {
+		return Channel{}, false, err
+	}
+	return s.store.OpenDirectChannel(ctx, Channel{ID: id, CreatedAt: s.now().UTC()}, userID, recipientID)
+}
+
+func (s *Service) ListDirectChannels(ctx context.Context, userID uuid.UUID, cursorValue string, limit int) (Page[Channel], error) {
+	cursor, err := decodeCursor(cursorValue, cursorDirects)
+	if err != nil {
+		return Page[Channel]{}, err
+	}
+	if err := validateLimit(limit); err != nil {
+		return Page[Channel]{}, err
+	}
+	rows, err := s.store.ListDirectChannels(ctx, userID, cursor, limit+1)
+	if err != nil {
+		return Page[Channel]{}, err
+	}
+	return channelPage(rows, limit, cursorDirects)
+}
+
+func channelPage(rows []channelListRow, limit int, kind string) (Page[Channel], error) {
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	items := make([]Channel, len(rows))
+	for index := range rows {
+		items[index] = rows[index].Channel
+	}
+	var next *string
+	if hasMore && len(rows) > 0 {
+		last := rows[len(rows)-1]
+		value, err := encodeCursor(pageCursor{Kind: kind, Time: last.UpdatedAt, ID: last.ID})
+		if err != nil {
+			return Page[Channel]{}, err
+		}
+		next = &value
+	}
+	return Page[Channel]{Items: items, HasMore: hasMore, NextCursor: next}, nil
 }
 
 func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID) (Message, error) {
@@ -243,11 +379,13 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return Message{}, err
 	}
-	if channel.Type != ChannelTypeText {
+	if !channel.IsText() {
 		return Message{}, ErrNotFound
 	}
-	if _, err := s.require(ctx, userID, channel.GuildID, PermSendMessages); err != nil {
-		return Message{}, err
+	if channel.GuildID != nil {
+		if _, err := s.require(ctx, userID, *channel.GuildID, PermSendMessages); err != nil {
+			return Message{}, err
+		}
 	}
 	if err := validateContent(content); err != nil {
 		return Message{}, err
@@ -321,11 +459,15 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, channelID, messageI
 	if err != nil {
 		return err
 	}
-	access, err := s.store.GetAccess(ctx, channel.GuildID, userID)
-	if err != nil {
-		return err
+	canManage := false
+	if channel.GuildID != nil {
+		access, err := s.store.GetAccess(ctx, *channel.GuildID, userID)
+		if err != nil {
+			return err
+		}
+		canManage = access.Has(PermManageMessages)
 	}
-	return s.store.DeleteMessage(ctx, userID, channelID, messageID, access.Has(PermManageMessages))
+	return s.store.DeleteMessage(ctx, userID, channelID, messageID, canManage)
 }
 
 func (s *Service) AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error) {
@@ -361,8 +503,8 @@ func validateReactionEmoji(emoji string) error {
 	return nil
 }
 
-func (s *Service) ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
-	return s.store.ListChannelMemberIDs(ctx, channelID)
+func (s *Service) ChannelAudience(ctx context.Context, channelID uuid.UUID) (Audience, error) {
+	return s.store.ChannelAudience(ctx, channelID)
 }
 
 func validateName(field, value string) (string, error) {
@@ -426,7 +568,7 @@ func decodeCursor(value, kind string) (*pageCursor, error) {
 	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Kind != kind || cursor.ID == uuid.Nil {
 		return nil, &ValidationError{Field: "cursor", Message: "is invalid"}
 	}
-	if (kind == cursorGuilds || kind == cursorMessages || kind == cursorMembers) && cursor.Time.IsZero() {
+	if (kind == cursorGuilds || kind == cursorMessages || kind == cursorMembers || kind == cursorThreads || kind == cursorDirects) && cursor.Time.IsZero() {
 		return nil, &ValidationError{Field: "cursor", Message: "is invalid"}
 	}
 	if kind == cursorChannels && cursor.Position < 0 {

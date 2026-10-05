@@ -35,6 +35,8 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET, POST` | `/api/v1/guilds/{guild_id}/roles` | Roleの一覧取得と作成 |
 | `PATCH, DELETE` | `/api/v1/guilds/{guild_id}/roles/{role_id}` | Roleの変更と削除 |
 | `PUT` | `/api/v1/users/@me/presence` | 自分のPresenceを更新する |
+| `GET, POST` | `/api/v1/channels/{channel_id}/threads` | Threadの一覧取得と作成 |
+| `GET, POST` | `/api/v1/users/@me/channels` | Direct Message Channelの一覧取得と開始 |
 | `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認する |
 | `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用してGuildへ参加する |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
@@ -64,6 +66,18 @@ MemberのNicknameは本人か、`MANAGE_MEMBERS`を持つ上位のMemberが変�
 `role_ids`は割り当てるRoleの全体を置き換えます。既定Roleや存在しないRoleを指定すると`400 INVALID_REQUEST`です。
 Presenceは利用者が`PUT /users/@me/presence`で公開する短命な状態です。Process Memoryだけに保持するため、未設定のUserと再起動後は`OFFLINE`を返します。
 
+## Category、Thread、Direct Message
+
+Channelの種類は`TEXT`、`VOICE`、`CATEGORY`、`THREAD`、`DIRECT`です。
+
+- **Category**は`parent_id`でChannelをまとめます。入れ子とMessage投稿はできません。Categoryを削除してもChannelは残り、`parent_id`が`null`になります。
+- **Thread**はText Channelを親とし、起点のMessageを指定できます。起点Messageごとに作成できるThreadは1つで、重複は`409 THREAD_ALREADY_EXISTS`です。ThreadはGuild Memberが参照でき、Guildの一覧には含まれず、親のThread一覧から更新順に取得します。親Channelを削除するとThreadも削除します。Threadの変更は名前だけです。
+- **Direct Message**は2 Userの組ごとに1つで、同じ組で開始し直すと既存のChannelを返します。`recipients`に両方のUserが入ります。参加者以外には存在しないものとして`404`を返し、変更と削除はできません。相手がブロック設定などで制限できる仕組みは未実装です。
+
+ThreadとDirect MessageのMessageにも、返信、Reaction、入力中通知を使えます。
+`CHANNEL_CREATE`、`CHANNEL_UPDATE`、`CHANNEL_DELETE`は、Guild Channelなら`GUILDS`、Direct Messageなら`DIRECT_MESSAGES`のIntentを購読したSessionへ配信します。
+Direct MessageのMessage Eventも`DIRECT_MESSAGES`で配信し、`GUILD_MESSAGES`には流しません。
+
 ## RoleとPermission
 
 各Guildには、全Memberへ適用される管理対象の既定Role（`@everyone`、position 0）が作られます。
@@ -75,7 +89,8 @@ Guild Ownerは常に全権限を持ち、Roleの階層に縛られません。
 | --- | --- |
 | Guildの変更、Inviteの一覧・無効化 | `MANAGE_GUILD` |
 | Inviteの作成 | `CREATE_INVITE` |
-| Channelの作成・変更・削除 | `MANAGE_CHANNELS` |
+| Channel（Category、Threadを含む）の変更・削除、Channelの作成 | `MANAGE_CHANNELS` |
+| Threadの作成 | `SEND_MESSAGES` |
 | Messageの投稿 | `SEND_MESSAGES` |
 | 他人のMessageの削除 | `MANAGE_MESSAGES` |
 | Memberの削除、他人のNickname変更 | `MANAGE_MEMBERS` |
@@ -211,7 +226,7 @@ make test-integration
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
 - Channel単位の権限上書き、Message検索、Channel既読位置は未実装です。
-- Category、DM、Thread、添付ファイル、Voice Channelのjoin・state APIとGateway通知は未実装です。
+- 添付ファイル、Voice Channelのjoin・state APIとGateway通知は未実装です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。

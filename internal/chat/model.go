@@ -11,11 +11,17 @@ import (
 var (
 	ErrForbidden = errors.New("forbidden")
 	ErrNotFound  = errors.New("resource not found")
+
+	ErrThreadExists = errors.New("a thread already exists for this message")
 )
 
 const (
 	ChannelTypeText  = "TEXT"
 	ChannelTypeVoice = "VOICE"
+
+	ChannelTypeCategory = "CATEGORY"
+	ChannelTypeThread   = "THREAD"
+	ChannelTypeDirect   = "DIRECT"
 )
 
 type ValidationError struct {
@@ -35,13 +41,32 @@ type Guild struct {
 }
 
 type Channel struct {
-	ID        uuid.UUID
-	GuildID   uuid.UUID
-	Type      string
-	Name      string
-	Topic     *string
-	Position  int
-	CreatedAt time.Time
+	ID         uuid.UUID
+	GuildID    *uuid.UUID
+	Type       string
+	Name       *string
+	Topic      *string
+	ParentID   *uuid.UUID
+	Position   int
+	Recipients []UserSummary
+	CreatedAt  time.Time
+}
+
+// IsText reports whether Messages can be posted to the Channel.
+func (c Channel) IsText() bool {
+	return c.Type == ChannelTypeText || c.Type == ChannelTypeThread || c.Type == ChannelTypeDirect
+}
+
+// channelListRow carries the activity time that orders Thread and Direct Message pages.
+type channelListRow struct {
+	Channel
+	UpdatedAt time.Time
+}
+
+// Audience is the set of Users who can read a Channel.
+type Audience struct {
+	UserIDs []uuid.UUID
+	Direct  bool
 }
 
 type UserSummary struct {
@@ -93,15 +118,22 @@ type UpdateGuildInput struct {
 }
 
 type CreateChannelInput struct {
-	Type  string
-	Name  string
-	Topic *string
+	Type     string
+	Name     string
+	Topic    *string
+	ParentID *uuid.UUID
+}
+
+type OptionalUUID struct {
+	Set   bool
+	Value *uuid.UUID
 }
 
 type UpdateChannelInput struct {
 	Name     *string
 	Topic    OptionalString
 	Position *int
+	ParentID OptionalUUID
 }
 
 type Page[T any] struct {
@@ -133,6 +165,10 @@ type Store interface {
 	DeleteGuild(ctx context.Context, ownerID, guildID uuid.UUID) error
 
 	CreateChannel(ctx context.Context, channel Channel) (Channel, error)
+	CreateThread(ctx context.Context, thread Channel, starterMessageID *uuid.UUID, now time.Time) (Channel, error)
+	ListThreads(ctx context.Context, userID, parentID uuid.UUID, cursor *pageCursor, limit int) ([]channelListRow, error)
+	OpenDirectChannel(ctx context.Context, channel Channel, userID, recipientID uuid.UUID) (Channel, bool, error)
+	ListDirectChannels(ctx context.Context, userID uuid.UUID, cursor *pageCursor, limit int) ([]channelListRow, error)
 	ListChannels(ctx context.Context, userID, guildID uuid.UUID, cursor *pageCursor, limit int) ([]Channel, error)
 	GetChannel(ctx context.Context, userID, channelID uuid.UUID) (Channel, error)
 	UpdateChannel(ctx context.Context, ownerID, channelID uuid.UUID, input UpdateChannelInput, updatedAt time.Time) (Channel, error)
@@ -145,7 +181,7 @@ type Store interface {
 	DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID, canManage bool) error
 	AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string, createdAt time.Time) (MessageReaction, bool, error)
 	RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error)
-	ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
+	ChannelAudience(ctx context.Context, channelID uuid.UUID) (Audience, error)
 }
 
 var ErrInviteUnavailable = errors.New("invite is expired or has no remaining uses")

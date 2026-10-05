@@ -17,7 +17,9 @@ const (
 	opHeartbeatAck   = 11
 
 	intentGuildMembers   int64 = 1 << 1
+	intentGuilds         int64 = 1 << 0
 	intentGuildMessages  int64 = 1 << 2
+	intentDirectMessages int64 = 1 << 3
 	intentGuildPresences int64 = 1 << 6
 	intentMessageContent int64 = 1 << 4
 	intentReactions      int64 = 1 << 7
@@ -27,6 +29,9 @@ const (
 const (
 	eventReady                 = "READY"
 	eventResumed               = "RESUMED"
+	eventChannelCreate         = "CHANNEL_CREATE"
+	eventChannelUpdate         = "CHANNEL_UPDATE"
+	eventChannelDelete         = "CHANNEL_DELETE"
 	eventMemberJoin            = "MEMBER_JOIN"
 	eventMemberUpdate          = "MEMBER_UPDATE"
 	eventMemberLeave           = "MEMBER_LEAVE"
@@ -63,6 +68,8 @@ type gatewayMessage struct {
 }
 
 type Message struct {
+	// Direct selects the DIRECT_MESSAGES intent instead of GUILD_MESSAGES.
+	Direct           bool
 	ID               uuid.UUID
 	ChannelID        uuid.UUID
 	Author           UserSummary
@@ -242,4 +249,45 @@ func nonNilIDs(ids []uuid.UUID) []uuid.UUID {
 		return []uuid.UUID{}
 	}
 	return ids
+}
+
+// Channel is a Channel as delivered by CHANNEL_CREATE and CHANNEL_UPDATE.
+type Channel struct {
+	ID         uuid.UUID
+	GuildID    *uuid.UUID
+	ParentID   *uuid.UUID
+	Type       string
+	Name       *string
+	Topic      *string
+	Position   int
+	CreatedAt  time.Time
+	Recipients []UserSummary
+}
+
+type channelPayload struct {
+	ID         uuid.UUID     `json:"id"`
+	GuildID    *uuid.UUID    `json:"guild_id"`
+	ParentID   *uuid.UUID    `json:"parent_id"`
+	Type       string        `json:"type"`
+	Name       *string       `json:"name"`
+	Topic      *string       `json:"topic"`
+	Position   int           `json:"position"`
+	CreatedAt  time.Time     `json:"created_at"`
+	Recipients []userPayload `json:"recipients"`
+}
+
+type channelDeletePayload struct {
+	ID      uuid.UUID  `json:"id"`
+	GuildID *uuid.UUID `json:"guild_id"`
+}
+
+func channelEventPayload(channel Channel) channelPayload {
+	recipients := make([]userPayload, len(channel.Recipients))
+	for index, recipient := range channel.Recipients {
+		recipients[index] = userPayload{ID: recipient.ID, DisplayName: recipient.DisplayName, AvatarURL: recipient.AvatarURL}
+	}
+	return channelPayload{
+		ID: channel.ID, GuildID: channel.GuildID, ParentID: channel.ParentID, Type: channel.Type, Name: channel.Name,
+		Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt, Recipients: recipients,
+	}
 }

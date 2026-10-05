@@ -72,6 +72,10 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("POST /api/v1/invites/{invite_code}/accept", server.acceptInvite)
 	mux.HandleFunc("GET /api/v1/channels/{channel_id}", server.getChannel)
 	mux.HandleFunc("PATCH /api/v1/channels/{channel_id}", server.updateChannel)
+	mux.HandleFunc("GET /api/v1/channels/{channel_id}/threads", server.listThreads)
+	mux.HandleFunc("POST /api/v1/channels/{channel_id}/threads", server.createThread)
+	mux.HandleFunc("GET /api/v1/users/@me/channels", server.listDirectChannels)
+	mux.HandleFunc("POST /api/v1/users/@me/channels", server.openDirectChannel)
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}", server.deleteChannel)
 	mux.HandleFunc("GET /api/v1/channels/{channel_id}/messages", server.listMessages)
 	mux.HandleFunc("POST /api/v1/channels/{channel_id}/messages", server.createMessage)
@@ -238,7 +242,7 @@ func (s *Server) writeError(writer http.ResponseWriter, request *http.Request, s
 	if cause != nil {
 		s.logger.Error("request failed", "request_id", requestID, "method", request.Method, "path", request.URL.Path, "error", cause)
 	}
-	if status == http.StatusUnauthorized || (status == http.StatusConflict && code != "INVITE_UNAVAILABLE") || status == http.StatusTooManyRequests {
+	if status == http.StatusUnauthorized || (status == http.StatusConflict && code == "EMAIL_ALREADY_REGISTERED") || status == http.StatusTooManyRequests {
 		s.audit(request, "authentication", "rejected", "code", code)
 	}
 	if status == http.StatusUnauthorized {

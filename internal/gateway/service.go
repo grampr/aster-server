@@ -179,8 +179,32 @@ func (s *Service) PublishMessageUpdate(recipients []uuid.UUID, message Message) 
 	s.hub.publishMessage(eventMessageUpdate, recipients, message)
 }
 
-func (s *Service) PublishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID) {
-	s.hub.publishMessageDelete(recipients, messageID, channelID)
+func (s *Service) PublishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID, direct bool) {
+	s.hub.publishMessageDelete(recipients, messageID, channelID, direct)
+}
+
+func (s *Service) PublishChannelCreate(recipients []uuid.UUID, channel Channel) {
+	s.hub.publishToIntent(channelIntent(channel), eventChannelCreate, recipients, channelEventPayload(channel))
+}
+
+func (s *Service) PublishChannelUpdate(recipients []uuid.UUID, channel Channel) {
+	s.hub.publishToIntent(channelIntent(channel), eventChannelUpdate, recipients, channelEventPayload(channel))
+}
+
+func (s *Service) PublishChannelDelete(recipients []uuid.UUID, channelID uuid.UUID, guildID *uuid.UUID) {
+	intent := intentGuilds
+	if guildID == nil {
+		intent = intentDirectMessages
+	}
+	s.hub.publishToIntent(intent, eventChannelDelete, recipients, channelDeletePayload{ID: channelID, GuildID: guildID})
+}
+
+// channelIntent selects GUILDS for Guild Channels and DIRECT_MESSAGES for Direct Messages.
+func channelIntent(channel Channel) int64 {
+	if channel.GuildID == nil {
+		return intentDirectMessages
+	}
+	return intentGuilds
 }
 
 func (s *Service) PublishMessageReaction(recipients []uuid.UUID, add bool, reaction MessageReaction) {

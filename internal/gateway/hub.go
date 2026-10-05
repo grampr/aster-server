@@ -138,7 +138,7 @@ func (h *hub) publishMessage(eventName string, recipients []uuid.UUID, message M
 		}
 		seen[userID] = struct{}{}
 		for _, s := range h.sessionsByUser[userID] {
-			if s.intents&intentGuildMessages == 0 {
+			if s.intents&messageIntent(message.Direct) == 0 {
 				continue
 			}
 			payload := messageEventPayload(message, s.intents&intentMessageContent != 0)
@@ -147,7 +147,14 @@ func (h *hub) publishMessage(eventName string, recipients []uuid.UUID, message M
 	}
 }
 
-func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID) {
+func messageIntent(direct bool) int64 {
+	if direct {
+		return intentDirectMessages
+	}
+	return intentGuildMessages
+}
+
+func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID, direct bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.pruneLocked()
@@ -159,7 +166,7 @@ func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID 
 		}
 		seen[userID] = struct{}{}
 		for _, s := range h.sessionsByUser[userID] {
-			if s.intents&intentGuildMessages != 0 {
+			if s.intents&messageIntent(direct) != 0 {
 				h.dispatchLocked(s, eventMessageDelete, messageDeletePayload{ID: messageID, ChannelID: channelID})
 			}
 		}
