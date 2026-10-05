@@ -17,6 +17,7 @@ import (
 	"github.com/grampr/aster-server/internal/httpapi"
 	"github.com/grampr/aster-server/internal/media"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
+	"github.com/grampr/aster-server/internal/voice"
 	"github.com/grampr/aster-server/migrations"
 )
 
@@ -91,9 +92,24 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	var voiceProvider voice.Provider
+	if config.Voice.Enabled() {
+		livekit, err := voice.NewLiveKit(voice.LiveKitConfig{
+			URL: config.Voice.URL, APIURL: config.Voice.APIURL, APIKey: config.Voice.APIKey, APISecret: config.Voice.APISecret,
+		})
+		if err != nil {
+			return err
+		}
+		voiceProvider = livekit
+	} else {
+		logger.Warn("ASTER_VOICE_LIVEKIT_URL is not set; voice channels are disabled")
+	}
+	voiceService := voice.New(chatService, voiceProvider, logger)
+	go sweepGateway(rootContext, gatewayService)
+
 	httpServer := &http.Server{
 		Addr:              config.HTTPAddress,
-		Handler:           httpapi.New(authService, chatService, gatewayService, logger, version),
+		Handler:           httpapi.New(authService, chatService, gatewayService, logger, version, httpapi.WithVoice(voiceService)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -124,4 +140,19 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// sweepGateway drops expired disconnected Gateway Sessions so that Presence and Voice
+// state are cleaned up soon after a User goes away.
+func sweepGateway(ctx context.Context, gatewayService *gateway.Service) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			gatewayService.Sweep()
+		}
+	}
 }

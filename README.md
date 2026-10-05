@@ -45,6 +45,8 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `POST` | `/api/v1/attachments/{attachment_id}/finalize` | Uploadしたファイルを確定する |
 | `GET` | `/api/v1/attachments/{attachment_id}/content` | 短命なDownload URLへ`303`で移動する |
 | `POST` | `/api/v1/attachments/{attachment_id}/download-intents` | 短命なDownload URLをJSONで返す |
+| `GET, POST` | `/api/v1/channels/{channel_id}/voice` | Voice Channelの参加者一覧取得と参加 |
+| `PATCH, DELETE` | `/api/v1/voice/sessions/@me` | 自分のVoice State更新と退出 |
 | `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認する |
 | `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用してGuildへ参加する |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
@@ -72,7 +74,7 @@ Inviteを使用できなくなる条件は次のとおりです。
 
 MemberのNicknameは本人か、`MANAGE_MEMBERS`を持つ上位のMemberが変更できます。空文字列とnullは設定の解除として扱います。
 `role_ids`は割り当てるRoleの全体を置き換えます。既定Roleや存在しないRoleを指定すると`400 INVALID_REQUEST`です。
-Presenceは利用者が`PUT /users/@me/presence`で公開する短命な状態です。Process Memoryだけに保持するため、未設定のUserと再起動後は`OFFLINE`を返します。
+Presenceは利用者が`PUT /users/@me/presence`で公開する短命な状態です。Process Memoryだけに保持するため、未設定のUserと再起動後は`OFFLINE`を返します。Gateway Sessionが残らなくなったUserは自動で`OFFLINE`にします。
 
 ## Category、Thread、Direct Message
 
@@ -85,6 +87,19 @@ Channelの種類は`TEXT`、`VOICE`、`CATEGORY`、`THREAD`、`DIRECT`です。
 ThreadとDirect MessageのMessageにも、返信、Reaction、入力中通知を使えます。
 `CHANNEL_CREATE`、`CHANNEL_UPDATE`、`CHANNEL_DELETE`は、Guild Channelなら`GUILDS`、Direct Messageなら`DIRECT_MESSAGES`のIntentを購読したSessionへ配信します。
 Direct MessageのMessage Eventも`DIRECT_MESSAGES`で配信し、`GUILD_MESSAGES`には流しません。
+
+## Voice Channel
+
+Voice APIはMedia Packetを運ばず、参加権限の確認、Voice State、Providerへの接続Session発行だけを担当します。
+現在のProviderは[LiveKit](https://livekit.io)です。ClientはResponseの`provider`でAdapterを選び、`endpoint`と短命な`credential`でProviderへ直接接続します。
+
+- `POST /channels/{id}/voice`は`CONNECT`権限を確認し、10分間有効なLiveKitのAccess Tokenを発行します。TokenはServerがAPI Secretで署名するため、発行にProviderへの通信は不要です。`SPEAK`がなければ聴取専用、`STREAM`がなければ音声のみの発行権限になります。Credentialは`Cache-Control: no-store`で返し、Logへ出力しません。
+- 別のVoice Channelへ参加すると移動として扱い、前の部屋のParticipantをProviderから切断し、退出Eventを先に配信します。
+- `PATCH /voice/sessions/@me`でMute、Deafen、Camera、Screen Shareの公開状態を変更します。CameraとScreen Shareは`STREAM`権限が必要です。参加を続ける権限を失ったMember（退出、Role変更、Channel削除）は、次の更新で退出扱いになります。
+- Voice StateはPresenceと同じくProcess Memoryだけに保持します。Gateway Sessionが（再接続の保持期間を過ぎて）1つも残らなくなったUserは、自動的にVoiceから退出し、Presenceも`OFFLINE`になります。
+- Gateway Sessionの失効はServerが15秒ごとに確認します。
+- `VOICE_STATE_UPDATE`は`GUILD_VOICE_STATES` Intentへ配信します。退出では`channel_id`と`session_id`が`null`で、各フラグは`false`です。
+- `ASTER_VOICE_LIVEKIT_URL`が未設定なら、Voice関連のAPIは`503 VOICE_UNAVAILABLE`を返します。
 
 ## 添付ファイル
 
@@ -209,7 +224,7 @@ Password は Argon2id の PHC 形式で保存します。
 
 ## ローカル起動
 
-Docker Compose を使う場合は、PostgreSQL、MinIO（添付ファイル用）、Server をまとめて起動できます。
+Docker Compose を使う場合は、PostgreSQL、MinIO（添付ファイル用）、LiveKit（Voice用）、Server をまとめて起動できます。
 
 ```bash
 make docker-up
@@ -252,6 +267,10 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_STORAGE_ACCESS_KEY` | なし | Access Key。Endpoint設定時は必須 |
 | `ASTER_STORAGE_SECRET_KEY` | なし | Secret Key。Endpoint設定時は必須 |
 | `ASTER_STORAGE_PATH_STYLE` | `true` | Bucketを`/bucket/key`形式で指定する（MinIO向け）。AWS S3では`false` |
+| `ASTER_VOICE_LIVEKIT_URL` | なし | LiveKitのWebSocket URL（`ws`または`wss`）。未設定ならVoiceを無効にする |
+| `ASTER_VOICE_LIVEKIT_API_URL` | URLの`ws`を`http`に置換した値 | Serverが部屋の管理に使うLiveKitのHTTP URL |
+| `ASTER_VOICE_LIVEKIT_API_KEY` | なし | LiveKitのAPI Key。URL設定時は必須 |
+| `ASTER_VOICE_LIVEKIT_API_SECRET` | なし | LiveKitのAPI Secret。URL設定時は必須 |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
 
 ## 検証
@@ -273,7 +292,7 @@ make test-integration
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
 - Channel単位の権限上書きと、Message検索の全文Indexは未実装です。
-- Voice Channelのjoin・state APIとGateway通知は未実装です。
+- LiveKitのAccess TokenはRFC 7515の公式ベクタでHS256署名を検証していますが、実際のLiveKitとの結合は自動テストしていません。
 - Object Storageへの署名付きURLはAWS公式のSigV4テストベクタで検証していますが、実際のS3やMinIOとの結合は自動テストしていません。Bucketには`PUT`を許可するCORS設定が必要です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。

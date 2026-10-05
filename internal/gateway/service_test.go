@@ -245,6 +245,48 @@ func TestGatewayPublishesMemberEventsOnlyWithGuildMembersIntent(t *testing.T) {
 	assertDispatch(t, readGateway(t, unsubscribed), eventMessageCreate, 1)
 }
 
+func TestGatewayReportsUsersWithNoSessionLeft(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}})
+	service.hub.sessionRetention = 20 * time.Millisecond
+	gone := make(chan uuid.UUID, 4)
+	service.SetOnUserGone(func(id uuid.UUID) { gone <- id })
+	server := httptest.NewServer(service)
+	defer server.Close()
+
+	connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	assertOpcode(t, readGateway(t, connection), opHello)
+	writeGateway(t, connection, map[string]any{"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": 0}})
+	assertDispatch(t, readGateway(t, connection), eventReady, 0)
+
+	// While the Session can still be resumed the User is not gone.
+	service.Sweep()
+	select {
+	case id := <-gone:
+		t.Fatalf("a connected user must not be reported gone: %s", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+	connection.Close()
+	waitFor(t, time.Second, func() bool {
+		service.hub.mu.Lock()
+		defer service.hub.mu.Unlock()
+		for _, s := range service.hub.sessions {
+			return s.disconnectedAt != nil
+		}
+		return false
+	})
+	time.Sleep(40 * time.Millisecond)
+	service.Sweep()
+	select {
+	case id := <-gone:
+		if id != userID {
+			t.Fatalf("unexpected user: %s", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the user must be reported gone once the retention period passed")
+	}
+}
+
 func TestGatewayClosesWhenAccessTokenIsNoLongerValid(t *testing.T) {
 	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
 	authenticator := fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}}

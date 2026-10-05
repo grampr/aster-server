@@ -242,6 +242,22 @@ func (s *Service) PublishReadStateUpdate(userID uuid.UUID, state ReadState) {
 	})
 }
 
+func (s *Service) PublishVoiceStateUpdate(recipients []uuid.UUID, state VoiceState) {
+	s.hub.publishToIntent(intentGuildVoiceStates, eventVoiceStateUpdate, recipients, voiceStatePayload(state))
+}
+
+// SetOnUserGone registers a callback for when a User has no Gateway Session left,
+// connected or retained for Resume. Call it before serving connections.
+func (s *Service) SetOnUserGone(callback func(userID uuid.UUID)) {
+	s.hub.mu.Lock()
+	defer s.hub.mu.Unlock()
+	s.hub.onUserGone = callback
+}
+
+// Sweep drops expired disconnected Sessions now instead of on the next Event, which
+// lets SetOnUserGone fire on time. Call it periodically.
+func (s *Service) Sweep() { s.hub.prune() }
+
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {
 	messageType, payload, err := client.connection.ReadMessage()
 	if err != nil {

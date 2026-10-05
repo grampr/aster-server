@@ -22,7 +22,19 @@ type Config struct {
 	GatewayAllowedOrigins   []string
 	AutoMigrate             bool
 	Storage                 StorageConfig
+	Voice                   VoiceConfig
 }
+
+// VoiceConfig describes the LiveKit server used for Voice Channels.
+// Voice is disabled when URL is empty.
+type VoiceConfig struct {
+	URL       string
+	APIURL    string
+	APIKey    string
+	APISecret string
+}
+
+func (c VoiceConfig) Enabled() bool { return c.URL != "" }
 
 // StorageConfig describes the S3-compatible Object Storage for attachments.
 // Attachments are disabled when Endpoint is empty.
@@ -90,6 +102,15 @@ func Load() (Config, error) {
 	}
 	if config.Storage.Enabled() && (config.Storage.Bucket == "" || config.Storage.AccessKey == "" || config.Storage.SecretKey == "") {
 		return Config{}, errors.New("ASTER_STORAGE_BUCKET, ASTER_STORAGE_ACCESS_KEY and ASTER_STORAGE_SECRET_KEY are required when ASTER_STORAGE_ENDPOINT is set")
+	}
+	config.Voice = VoiceConfig{
+		URL:       os.Getenv("ASTER_VOICE_LIVEKIT_URL"),
+		APIURL:    os.Getenv("ASTER_VOICE_LIVEKIT_API_URL"),
+		APIKey:    os.Getenv("ASTER_VOICE_LIVEKIT_API_KEY"),
+		APISecret: os.Getenv("ASTER_VOICE_LIVEKIT_API_SECRET"),
+	}
+	if config.Voice.Enabled() && (config.Voice.APIKey == "" || config.Voice.APISecret == "") {
+		return Config{}, errors.New("ASTER_VOICE_LIVEKIT_API_KEY and ASTER_VOICE_LIVEKIT_API_SECRET are required when ASTER_VOICE_LIVEKIT_URL is set")
 	}
 	if config.RefreshTokenTTL <= config.AccessTokenTTL {
 		return Config{}, errors.New("ASTER_REFRESH_TOKEN_TTL must be greater than ASTER_ACCESS_TOKEN_TTL")

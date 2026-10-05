@@ -16,14 +16,15 @@ const (
 	opHello          = 10
 	opHeartbeatAck   = 11
 
-	intentGuildMembers   int64 = 1 << 1
-	intentGuilds         int64 = 1 << 0
-	intentGuildMessages  int64 = 1 << 2
-	intentDirectMessages int64 = 1 << 3
-	intentGuildPresences int64 = 1 << 6
-	intentMessageContent int64 = 1 << 4
-	intentReactions      int64 = 1 << 7
-	intentTyping         int64 = 1 << 9
+	intentGuildMembers     int64 = 1 << 1
+	intentGuilds           int64 = 1 << 0
+	intentGuildMessages    int64 = 1 << 2
+	intentDirectMessages   int64 = 1 << 3
+	intentGuildVoiceStates int64 = 1 << 5
+	intentGuildPresences   int64 = 1 << 6
+	intentMessageContent   int64 = 1 << 4
+	intentReactions        int64 = 1 << 7
+	intentTyping           int64 = 1 << 9
 )
 
 const (
@@ -33,6 +34,7 @@ const (
 	eventChannelUpdate         = "CHANNEL_UPDATE"
 	eventChannelDelete         = "CHANNEL_DELETE"
 	eventReadStateUpdate       = "READ_STATE_UPDATE"
+	eventVoiceStateUpdate      = "VOICE_STATE_UPDATE"
 	eventMemberJoin            = "MEMBER_JOIN"
 	eventMemberUpdate          = "MEMBER_UPDATE"
 	eventMemberLeave           = "MEMBER_LEAVE"
@@ -340,4 +342,27 @@ func attachmentEventPayloads(attachments []Attachment) []attachmentPayload {
 		payloads[index] = attachmentPayload(attachment)
 	}
 	return payloads
+}
+
+// VoiceState is a User's public Voice state. ChannelID and SessionID are nil after leaving.
+type VoiceState struct {
+	UserID     uuid.UUID
+	ChannelID  *uuid.UUID
+	SessionID  *uuid.UUID
+	SelfMute   bool
+	SelfDeaf   bool
+	SelfVideo  bool
+	SelfStream bool
+	UpdatedAt  time.Time
+}
+
+type voiceStatePayload struct {
+	UserID     uuid.UUID  `json:"user_id"`
+	ChannelID  *uuid.UUID `json:"channel_id"`
+	SessionID  *uuid.UUID `json:"session_id"`
+	SelfMute   bool       `json:"self_mute"`
+	SelfDeaf   bool       `json:"self_deaf"`
+	SelfVideo  bool       `json:"self_video"`
+	SelfStream bool       `json:"self_stream"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }

@@ -82,3 +82,24 @@ func (s *Service) applyPresence(members ...*Member) {
 		member.Presence = &presence
 	}
 }
+
+// ClearPresence forgets the caller's Presence. It returns the offline Presence and the
+// Guilds to notify, or false if nothing was set.
+func (s *Service) ClearPresence(ctx context.Context, userID uuid.UUID) (Presence, []uuid.UUID, bool, error) {
+	if !s.presence.clear(userID) {
+		return Presence{}, nil, false, nil
+	}
+	guildIDs, err := s.store.ListUserGuildIDs(ctx, userID)
+	if err != nil {
+		return Presence{}, nil, false, err
+	}
+	return Presence{UserID: userID, Status: PresenceOffline, UpdatedAt: s.now().UTC()}, guildIDs, true, nil
+}
+
+func (t *presenceTracker) clear(userID uuid.UUID) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, present := t.entries[userID]
+	delete(t.entries, userID)
+	return present
+}

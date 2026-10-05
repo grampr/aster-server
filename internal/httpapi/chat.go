@@ -15,6 +15,7 @@ import (
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
 	"github.com/grampr/aster-server/internal/gateway"
+	"github.com/grampr/aster-server/internal/voice"
 )
 
 func (s *Server) createGuild(writer http.ResponseWriter, request *http.Request) {
@@ -519,6 +520,8 @@ func (s *Server) handleChatError(writer http.ResponseWriter, request *http.Reque
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", validationError.Error(), nil)
 	case errors.Is(err, chat.ErrForbidden):
 		s.writeError(writer, request, http.StatusForbidden, "FORBIDDEN", "You do not have permission to perform this operation", nil)
+	case errors.Is(err, voice.ErrUnavailable):
+		s.writeError(writer, request, http.StatusServiceUnavailable, "VOICE_UNAVAILABLE", "Voice is not available", nil)
 	case errors.Is(err, chat.ErrStorageUnavailable):
 		s.writeError(writer, request, http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", "Attachments are not available", nil)
 	case errors.Is(err, chat.ErrUploadQuota):

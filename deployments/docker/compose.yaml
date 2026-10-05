@@ -45,6 +45,16 @@ services:
       mc admin config set local api cors_allow_origin='*' >/dev/null"
     restart: "no"
 
+  voice:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    environment:
+      LIVEKIT_KEYS: "devkey: devsecret-devsecret-devsecret-0000"
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
   server:
     build:
       context: ../..
@@ -63,6 +73,10 @@ services:
       ASTER_STORAGE_BUCKET: aster
       ASTER_STORAGE_ACCESS_KEY: aster
       ASTER_STORAGE_SECRET_KEY: aster-secret
+      ASTER_VOICE_LIVEKIT_URL: ws://localhost:7880
+      ASTER_VOICE_LIVEKIT_API_URL: http://voice:7880
+      ASTER_VOICE_LIVEKIT_API_KEY: devkey
+      ASTER_VOICE_LIVEKIT_API_SECRET: devsecret-devsecret-devsecret-0000
     ports:
       - "8080:8080"
 

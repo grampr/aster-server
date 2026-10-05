@@ -600,3 +600,31 @@ func newUUIDv7() (uuid.UUID, error) {
 	}
 	return id, nil
 }
+
+// AuthorizeVoice returns the Voice Channel and the caller's Access if they may connect.
+func (s *Service) AuthorizeVoice(ctx context.Context, userID, channelID uuid.UUID) (Channel, Access, error) {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Channel{}, Access{}, err
+	}
+	if channel.Type != ChannelTypeVoice || channel.GuildID == nil {
+		return Channel{}, Access{}, ErrNotFound
+	}
+	access, err := s.require(ctx, userID, *channel.GuildID, PermConnect)
+	if err != nil {
+		return Channel{}, Access{}, err
+	}
+	return channel, access, nil
+}
+
+// ViewVoiceChannel returns a Voice Channel the caller can see.
+func (s *Service) ViewVoiceChannel(ctx context.Context, userID, channelID uuid.UUID) (Channel, error) {
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if channel.Type != ChannelTypeVoice {
+		return Channel{}, ErrNotFound
+	}
+	return channel, nil
+}

@@ -39,6 +39,7 @@ type hub struct {
 	sessionRetention time.Duration
 	eventBufferSize  int
 	now              func() time.Time
+	onUserGone       func(userID uuid.UUID)
 }
 
 func newHub(gatewayURL string, sessionRetention time.Duration, eventBufferSize int) *hub {
@@ -289,5 +290,16 @@ func (h *hub) removeLocked(s *session) {
 	delete(h.sessionsByUser[s.userID], s.id)
 	if len(h.sessionsByUser[s.userID]) == 0 {
 		delete(h.sessionsByUser, s.userID)
+		if h.onUserGone != nil {
+			// Run outside the lock so the callback may publish Events.
+			go h.onUserGone(s.userID)
+		}
 	}
+}
+
+// prune removes Sessions that stayed disconnected past the retention period.
+func (h *hub) prune() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
 }

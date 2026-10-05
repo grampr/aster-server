@@ -80,3 +80,20 @@ func TestLoadStorageIsOptionalButAllOrNothing(t *testing.T) {
 		t.Fatalf("unexpected storage config: %+v", config.Storage)
 	}
 }
+
+func TestLoadVoiceIsOptionalButAllOrNothing(t *testing.T) {
+	t.Setenv("ASTER_DATABASE_URL", "postgres://example")
+	config, err := Load()
+	if err != nil || config.Voice.Enabled() {
+		t.Fatalf("voice must be disabled without a URL: %v %+v", err, config.Voice)
+	}
+	t.Setenv("ASTER_VOICE_LIVEKIT_URL", "ws://localhost:7880")
+	if _, err := Load(); err == nil {
+		t.Fatal("a URL without API credentials must be rejected")
+	}
+	t.Setenv("ASTER_VOICE_LIVEKIT_API_KEY", "key")
+	t.Setenv("ASTER_VOICE_LIVEKIT_API_SECRET", "secret")
+	if config, err = Load(); err != nil || !config.Voice.Enabled() {
+		t.Fatalf("unexpected voice config: %v %+v", err, config.Voice)
+	}
+}

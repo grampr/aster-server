@@ -18,6 +18,7 @@ import (
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
 	"github.com/grampr/aster-server/internal/gateway"
+	"github.com/grampr/aster-server/internal/voice"
 )
 
 const maxRequestBodyBytes = 64 << 10
@@ -26,17 +27,27 @@ type Server struct {
 	auth           *auth.Service
 	chat           *chat.Service
 	gateway        *gateway.Service
+	voice          *voice.Service
 	logger         *slog.Logger
 	version        string
 	requestLimiter *fixedWindowLimiter
 	loginLimiter   *fixedWindowLimiter
 }
 
-func New(authService *auth.Service, chatService *chat.Service, gatewayService *gateway.Service, logger *slog.Logger, version string) http.Handler {
+func New(authService *auth.Service, chatService *chat.Service, gatewayService *gateway.Service, logger *slog.Logger, version string, options ...Option) http.Handler {
 	server := &Server{
 		auth: authService, chat: chatService, gateway: gatewayService, logger: logger, version: version,
 		requestLimiter: newFixedWindowLimiter(60, time.Minute),
 		loginLimiter:   newFixedWindowLimiter(5, 15*time.Minute),
+	}
+	for _, option := range options {
+		option(server)
+	}
+	if server.voice != nil {
+		server.voice.SetNotifier(server.publishVoiceState)
+	}
+	if gatewayService != nil {
+		gatewayService.SetOnUserGone(server.userGone)
 	}
 	mux := http.NewServeMux()
 	if gatewayService != nil {
@@ -74,6 +85,10 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("PATCH /api/v1/channels/{channel_id}", server.updateChannel)
 	mux.HandleFunc("GET /api/v1/channels/{channel_id}/threads", server.listThreads)
 	mux.HandleFunc("POST /api/v1/channels/{channel_id}/threads", server.createThread)
+	mux.HandleFunc("GET /api/v1/channels/{channel_id}/voice", server.voiceRoute(server.listVoiceStates))
+	mux.HandleFunc("POST /api/v1/channels/{channel_id}/voice", server.voiceRoute(server.joinVoiceChannel))
+	mux.HandleFunc("PATCH /api/v1/voice/sessions/@me", server.voiceRoute(server.updateVoiceState))
+	mux.HandleFunc("DELETE /api/v1/voice/sessions/@me", server.voiceRoute(server.leaveVoiceChannel))
 	mux.HandleFunc("POST /api/v1/channels/{channel_id}/attachments/intents", server.createAttachmentIntent)
 	mux.HandleFunc("GET /api/v1/attachments/{attachment_id}", server.getAttachment)
 	mux.HandleFunc("DELETE /api/v1/attachments/{attachment_id}", server.deleteAttachment)
