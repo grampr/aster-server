@@ -54,3 +54,29 @@ func TestLoadRejectsRefreshTTLShorterThanAccessTTL(t *testing.T) {
 		t.Fatal("refresh TTL shorter than access TTL must be rejected")
 	}
 }
+
+func TestLoadStorageIsOptionalButAllOrNothing(t *testing.T) {
+	t.Setenv("ASTER_DATABASE_URL", "postgres://example")
+	config, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Storage.Enabled() {
+		t.Fatal("storage must be disabled without an endpoint")
+	}
+
+	t.Setenv("ASTER_STORAGE_ENDPOINT", "http://localhost:9000")
+	if _, err := Load(); err == nil {
+		t.Fatal("an endpoint without credentials and a bucket must be rejected")
+	}
+	t.Setenv("ASTER_STORAGE_BUCKET", "aster")
+	t.Setenv("ASTER_STORAGE_ACCESS_KEY", "key")
+	t.Setenv("ASTER_STORAGE_SECRET_KEY", "secret")
+	config, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.Storage.Enabled() || config.Storage.Region != "us-east-1" || !config.Storage.PathStyle {
+		t.Fatalf("unexpected storage config: %+v", config.Storage)
+	}
+}

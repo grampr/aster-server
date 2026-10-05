@@ -246,15 +246,15 @@ func (s *Server) createMessage(writer http.ResponseWriter, request *http.Request
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "Request body is invalid", err)
 		return
 	}
-	if body.AttachmentIds != nil && len(*body.AttachmentIds) > 0 {
-		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "attachment_ids: attachments are not supported yet", nil)
-		return
+	var attachmentIDs []uuid.UUID
+	if body.AttachmentIds != nil {
+		attachmentIDs = *body.AttachmentIds
 	}
 	content := ""
 	if body.Content != nil {
 		content = *body.Content
 	}
-	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, content, body.ReplyToMessageId)
+	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, content, body.ReplyToMessageId, attachmentIDs)
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
@@ -400,7 +400,7 @@ func (s *Server) publishMessage(request *http.Request, event string, message cha
 	}
 	recipients := audience.UserIDs
 	payload := gateway.Message{
-		Direct: audience.Direct, ID: message.ID, ChannelID: message.ChannelID, Content: message.Content, ReplyToMessageID: message.ReplyToMessageID,
+		Direct: audience.Direct, Attachments: gatewayAttachments(message.Attachments), ID: message.ID, ChannelID: message.ChannelID, Content: message.Content, ReplyToMessageID: message.ReplyToMessageID,
 		Author:    gateway.UserSummary{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
 		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 	}
@@ -519,6 +519,14 @@ func (s *Server) handleChatError(writer http.ResponseWriter, request *http.Reque
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", validationError.Error(), nil)
 	case errors.Is(err, chat.ErrForbidden):
 		s.writeError(writer, request, http.StatusForbidden, "FORBIDDEN", "You do not have permission to perform this operation", nil)
+	case errors.Is(err, chat.ErrStorageUnavailable):
+		s.writeError(writer, request, http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", "Attachments are not available", nil)
+	case errors.Is(err, chat.ErrUploadQuota):
+		s.writeError(writer, request, http.StatusTooManyRequests, "UPLOAD_QUOTA_EXCEEDED", "Too many unused attachments; send or delete some first", nil)
+	case errors.Is(err, chat.ErrAttachmentInUse):
+		s.writeError(writer, request, http.StatusConflict, "ATTACHMENT_IN_USE", "Attachment is attached to a message", nil)
+	case errors.Is(err, chat.ErrAttachmentMismatch):
+		s.writeError(writer, request, http.StatusConflict, "ATTACHMENT_MISMATCH", "Uploaded object is missing or does not match the declaration", nil)
 	case errors.Is(err, chat.ErrThreadExists):
 		s.writeError(writer, request, http.StatusConflict, "THREAD_ALREADY_EXISTS", "A thread already exists for this message", nil)
 	case errors.Is(err, chat.ErrInviteUnavailable):
@@ -622,7 +630,7 @@ func messageResponse(message chat.Message) protocolgo.Message {
 		reactions[index] = messageReactionResponse(reaction)
 	}
 	response := protocolgo.Message{
-		Id: message.ID, ChannelId: message.ChannelID, Content: message.Content, Attachments: []protocolgo.Attachment{},
+		Id: message.ID, ChannelId: message.ChannelID, Content: message.Content, Attachments: attachmentsResponse(message.Attachments),
 		ReplyToMessageId: message.ReplyToMessageID, Reactions: reactions, CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 		Author: protocolgo.UserSummary{
 			Id: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarUrl: message.Author.AvatarURL,
@@ -638,6 +646,14 @@ func messageResponse(message chat.Message) protocolgo.Message {
 		}
 	}
 	return response
+}
+
+func attachmentsResponse(attachments []chat.Attachment) []protocolgo.Attachment {
+	items := make([]protocolgo.Attachment, len(attachments))
+	for index := range attachments {
+		items[index] = attachmentResponse(attachments[index])
+	}
+	return items
 }
 
 func messageReactionResponse(reaction chat.MessageReaction) protocolgo.MessageReaction {

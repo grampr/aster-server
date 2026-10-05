@@ -15,6 +15,7 @@ import (
 	"github.com/grampr/aster-server/internal/config"
 	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
+	"github.com/grampr/aster-server/internal/media"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
 	"github.com/grampr/aster-server/migrations"
 )
@@ -62,9 +63,24 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	chatService, err := chat.NewService(chat.NewPostgresStore(pool))
+	chatStore := chat.NewPostgresStore(pool)
+	chatService, err := chat.NewService(chatStore)
 	if err != nil {
 		return err
+	}
+	if config.Storage.Enabled() {
+		storage, err := media.NewS3Storage(media.S3Config{
+			Endpoint: config.Storage.Endpoint, PublicEndpoint: config.Storage.PublicEndpoint, Region: config.Storage.Region,
+			Bucket: config.Storage.Bucket, AccessKey: config.Storage.AccessKey, SecretKey: config.Storage.SecretKey,
+			PathStyle: config.Storage.PathStyle,
+		})
+		if err != nil {
+			return err
+		}
+		chatService.WithStorage(storage)
+		go media.NewJanitor(chatStore, storage, logger).Run(rootContext, time.Minute)
+	} else {
+		logger.Warn("ASTER_STORAGE_ENDPOINT is not set; attachments are disabled")
 	}
 	gatewayService, err := gateway.New(authService, gateway.Config{
 		URL: config.GatewayURL, HeartbeatInterval: config.GatewayHeartbeat,

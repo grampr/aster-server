@@ -134,7 +134,13 @@ func (s *PostgresStore) DeleteGuild(ctx context.Context, ownerID, guildID uuid.U
 }
 
 func (s *PostgresStore) CreateMessage(ctx context.Context, message Message) (Message, error) {
-	err := scanMessage(s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Message{}, fmt.Errorf("begin message creation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	attachmentIDs := message.AttachmentIDs
+	err = scanMessage(tx.QueryRow(ctx, `
 		WITH inserted AS (
 			INSERT INTO messages (id, channel_id, author_id, content, reply_to_message_id, created_at)
 			SELECT $1, c.id, $3, $4, $5, $6
@@ -162,6 +168,21 @@ func (s *PostgresStore) CreateMessage(ctx context.Context, message Message) (Mes
 	}
 	if err != nil {
 		return Message{}, fmt.Errorf("create message: %w", err)
+	}
+	if len(attachmentIDs) > 0 {
+		tag, err := tx.Exec(ctx, `
+			UPDATE attachments SET message_id = $1
+			WHERE id = ANY($2) AND channel_id = $3 AND uploader_id = $4 AND status = 'READY' AND message_id IS NULL`,
+			message.ID, attachmentIDs, message.ChannelID, message.Author.ID)
+		if err != nil {
+			return Message{}, fmt.Errorf("attach attachments: %w", err)
+		}
+		if int(tag.RowsAffected()) != len(attachmentIDs) {
+			return Message{}, &ValidationError{Field: "attachment_ids", Message: "must reference your finalized, unused attachments for this channel"}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Message{}, fmt.Errorf("commit message creation: %w", err)
 	}
 	if err := s.populateMessageReactions(ctx, message.Author.ID, &message); err != nil {
 		return Message{}, err
@@ -369,9 +390,13 @@ func (s *PostgresStore) changeMessageReaction(
 	return MessageReaction{Emoji: emoji, Count: count, Me: me}, changed, nil
 }
 
+// populateMessageReactions fills in the Reactions and Attachments of Messages.
 func (s *PostgresStore) populateMessageReactions(ctx context.Context, userID uuid.UUID, messages ...*Message) error {
 	if len(messages) == 0 {
 		return nil
+	}
+	if err := s.populateMessageAttachments(ctx, messages...); err != nil {
+		return err
 	}
 	messageByID := make(map[uuid.UUID]*Message, len(messages))
 	messageIDs := make([]uuid.UUID, 0, len(messages))

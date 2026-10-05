@@ -21,7 +21,22 @@ type Config struct {
 	GatewaySessionRetention time.Duration
 	GatewayAllowedOrigins   []string
 	AutoMigrate             bool
+	Storage                 StorageConfig
 }
+
+// StorageConfig describes the S3-compatible Object Storage for attachments.
+// Attachments are disabled when Endpoint is empty.
+type StorageConfig struct {
+	Endpoint       string
+	PublicEndpoint string
+	Region         string
+	Bucket         string
+	AccessKey      string
+	SecretKey      string
+	PathStyle      bool
+}
+
+func (c StorageConfig) Enabled() bool { return c.Endpoint != "" }
 
 func Load() (Config, error) {
 	config := Config{
@@ -61,6 +76,20 @@ func Load() (Config, error) {
 	}
 	if config.AutoMigrate, err = boolFromEnv("ASTER_AUTO_MIGRATE", false); err != nil {
 		return Config{}, err
+	}
+	config.Storage = StorageConfig{
+		Endpoint:       os.Getenv("ASTER_STORAGE_ENDPOINT"),
+		PublicEndpoint: os.Getenv("ASTER_STORAGE_PUBLIC_ENDPOINT"),
+		Region:         envOrDefault("ASTER_STORAGE_REGION", "us-east-1"),
+		Bucket:         os.Getenv("ASTER_STORAGE_BUCKET"),
+		AccessKey:      os.Getenv("ASTER_STORAGE_ACCESS_KEY"),
+		SecretKey:      os.Getenv("ASTER_STORAGE_SECRET_KEY"),
+	}
+	if config.Storage.PathStyle, err = boolFromEnv("ASTER_STORAGE_PATH_STYLE", true); err != nil {
+		return Config{}, err
+	}
+	if config.Storage.Enabled() && (config.Storage.Bucket == "" || config.Storage.AccessKey == "" || config.Storage.SecretKey == "") {
+		return Config{}, errors.New("ASTER_STORAGE_BUCKET, ASTER_STORAGE_ACCESS_KEY and ASTER_STORAGE_SECRET_KEY are required when ASTER_STORAGE_ENDPOINT is set")
 	}
 	if config.RefreshTokenTTL <= config.AccessTokenTTL {
 		return Config{}, errors.New("ASTER_REFRESH_TOKEN_TTL must be greater than ASTER_ACCESS_TOKEN_TTL")

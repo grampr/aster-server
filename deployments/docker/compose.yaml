@@ -16,6 +16,35 @@ services:
       - aster-postgres:/var/lib/postgresql/data
       - ./init-test-db.sql:/docker-entrypoint-initdb.d/001-test-db.sql:ro
 
+  storage:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: aster
+      MINIO_ROOT_PASSWORD: aster-secret
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - aster-storage:/data
+
+  storage-setup:
+    image: minio/mc:latest
+    depends_on:
+      storage:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "mc alias set local http://storage:9000 aster aster-secret &&
+      mc mb --ignore-existing local/aster &&
+      mc anonymous set none local/aster &&
+      mc admin config set local api cors_allow_origin='*' >/dev/null"
+    restart: "no"
+
   server:
     build:
       context: ../..
@@ -23,12 +52,20 @@ services:
     depends_on:
       database:
         condition: service_healthy
+      storage-setup:
+        condition: service_completed_successfully
     environment:
       ASTER_HTTP_ADDR: :8080
       ASTER_DATABASE_URL: postgres://aster:aster@database:5432/aster?sslmode=disable
       ASTER_AUTO_MIGRATE: "true"
+      ASTER_STORAGE_ENDPOINT: http://storage:9000
+      ASTER_STORAGE_PUBLIC_ENDPOINT: http://localhost:9000
+      ASTER_STORAGE_BUCKET: aster
+      ASTER_STORAGE_ACCESS_KEY: aster
+      ASTER_STORAGE_SECRET_KEY: aster-secret
     ports:
       - "8080:8080"
 
 volumes:
   aster-postgres:
+  aster-storage:

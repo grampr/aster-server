@@ -13,6 +13,12 @@ var (
 	ErrNotFound  = errors.New("resource not found")
 
 	ErrThreadExists = errors.New("a thread already exists for this message")
+
+	ErrStorageUnavailable = errors.New("object storage is not configured")
+	ErrUploadQuota        = errors.New("too many unused attachments")
+	ErrAttachmentInUse    = errors.New("attachment is attached to a message")
+	// ErrAttachmentMismatch means the uploaded Object does not match what was declared.
+	ErrAttachmentMismatch = errors.New("uploaded object does not match the declaration")
 )
 
 const (
@@ -75,7 +81,36 @@ type UserSummary struct {
 	AvatarURL   *string
 }
 
+const (
+	AttachmentPending = "PENDING"
+	AttachmentReady   = "READY"
+)
+
+type Attachment struct {
+	ID             uuid.UUID
+	ChannelID      uuid.UUID
+	UploaderID     uuid.UUID
+	MessageID      *uuid.UUID
+	Filename       string
+	ContentType    string
+	Size           int64
+	ChecksumSHA256 string
+	Status         string
+	ObjectKey      string
+	CreatedAt      time.Time
+}
+
+type CreateAttachmentInput struct {
+	Filename       string
+	ContentType    string
+	Size           int64
+	ChecksumSHA256 string
+}
+
 type Message struct {
+	// AttachmentIDs are the finalized Attachments to attach when creating the Message.
+	AttachmentIDs    []uuid.UUID
+	Attachments      []Attachment
 	ID               uuid.UUID
 	ChannelID        uuid.UUID
 	Author           UserSummary
@@ -158,6 +193,7 @@ type Store interface {
 	MemberStore
 	RoleStore
 	ReadStateStore
+	AttachmentStore
 
 	CreateGuild(ctx context.Context, ownerID uuid.UUID, guild Guild) error
 	ListGuilds(ctx context.Context, userID uuid.UUID, cursor *pageCursor, limit int) ([]guildListRow, error)
@@ -297,4 +333,12 @@ type ReadStateStore interface {
 	UpdateReadState(ctx context.Context, userID, channelID, messageID uuid.UUID, now time.Time) (ReadState, bool, error)
 	ListReadStates(ctx context.Context, userID uuid.UUID) ([]ReadState, error)
 	SearchMessages(ctx context.Context, userID, guildID uuid.UUID, input SearchInput, cursor *pageCursor, limit int) ([]Message, error)
+}
+
+// AttachmentStore persists Attachment metadata. Object bytes live in Object Storage.
+type AttachmentStore interface {
+	CreateAttachment(ctx context.Context, attachment Attachment, maxUnused int) (Attachment, error)
+	GetAttachment(ctx context.Context, userID, attachmentID uuid.UUID) (Attachment, error)
+	MarkAttachmentReady(ctx context.Context, attachmentID uuid.UUID) (Attachment, error)
+	DeleteAttachment(ctx context.Context, userID, attachmentID uuid.UUID) error
 }

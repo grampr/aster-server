@@ -71,6 +71,7 @@ type gatewayMessage struct {
 type Message struct {
 	// Direct selects the DIRECT_MESSAGES intent instead of GUILD_MESSAGES.
 	Direct           bool
+	Attachments      []Attachment
 	ID               uuid.UUID
 	ChannelID        uuid.UUID
 	Author           UserSummary
@@ -135,7 +136,7 @@ type messagePayload struct {
 	Content          *string              `json:"content"`
 	ReplyToMessageID *uuid.UUID           `json:"reply_to_message_id"`
 	ReplyTo          *messageReplyPayload `json:"reply_to"`
-	Attachments      []struct{}           `json:"attachments"`
+	Attachments      []attachmentPayload  `json:"attachments"`
 	CreatedAt        time.Time            `json:"created_at"`
 	EditedAt         *time.Time           `json:"edited_at"`
 }
@@ -182,7 +183,7 @@ func messageEventPayload(message Message, includeContent bool) messagePayload {
 	payload := messagePayload{
 		ID: message.ID, ChannelID: message.ChannelID,
 		Author:  userPayload{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
-		Content: content, ReplyToMessageID: message.ReplyToMessageID, Attachments: []struct{}{},
+		Content: content, ReplyToMessageID: message.ReplyToMessageID, Attachments: attachmentEventPayloads(message.Attachments),
 		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 	}
 	if message.ReplyTo != nil {
@@ -304,4 +305,39 @@ type readStatePayload struct {
 	ChannelID         uuid.UUID  `json:"channel_id"`
 	LastReadMessageID *uuid.UUID `json:"last_read_message_id"`
 	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+// Attachment is a finalized file on a Message.
+type Attachment struct {
+	ID             uuid.UUID
+	UploaderID     uuid.UUID
+	ChannelID      uuid.UUID
+	Filename       string
+	ContentType    string
+	Size           int64
+	ChecksumSHA256 string
+	Status         string
+	DownloadURL    string
+	CreatedAt      time.Time
+}
+
+type attachmentPayload struct {
+	ID             uuid.UUID `json:"id"`
+	UploaderID     uuid.UUID `json:"uploader_id"`
+	ChannelID      uuid.UUID `json:"channel_id"`
+	Filename       string    `json:"filename"`
+	ContentType    string    `json:"content_type"`
+	Size           int64     `json:"size"`
+	ChecksumSHA256 string    `json:"checksum_sha256"`
+	Status         string    `json:"status"`
+	DownloadURL    string    `json:"download_url"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func attachmentEventPayloads(attachments []Attachment) []attachmentPayload {
+	payloads := make([]attachmentPayload, len(attachments))
+	for index, attachment := range attachments {
+		payloads[index] = attachmentPayload(attachment)
+	}
+	return payloads
 }

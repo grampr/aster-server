@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/grampr/aster-server/internal/media"
 )
 
 const (
@@ -23,6 +24,7 @@ const (
 )
 
 type Service struct {
+	storage  media.Storage
 	store    Store
 	now      func() time.Time
 	presence *presenceTracker
@@ -374,7 +376,7 @@ func channelPage(rows []channelListRow, limit int, kind string) (Page[Channel], 
 	return Page[Channel]{Items: items, HasMore: hasMore, NextCursor: next}, nil
 }
 
-func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID) (Message, error) {
+func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID, content string, replyToMessageID *uuid.UUID, attachmentIDs []uuid.UUID) (Message, error) {
 	channel, err := s.store.GetChannel(ctx, userID, channelID)
 	if err != nil {
 		return Message{}, err
@@ -387,8 +389,22 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 			return Message{}, err
 		}
 	}
-	if err := validateContent(content); err != nil {
-		return Message{}, err
+	if len(attachmentIDs) > maxMessageAttachments {
+		return Message{}, &ValidationError{Field: "attachment_ids", Message: "must contain at most 10 attachments"}
+	}
+	seen := make(map[uuid.UUID]struct{}, len(attachmentIDs))
+	for _, attachmentID := range attachmentIDs {
+		if _, duplicate := seen[attachmentID]; duplicate {
+			return Message{}, &ValidationError{Field: "attachment_ids", Message: "must not contain duplicates"}
+		}
+		seen[attachmentID] = struct{}{}
+	}
+	if len(attachmentIDs) == 0 {
+		if err := validateContent(content); err != nil {
+			return Message{}, err
+		}
+	} else if utf8.RuneCountInString(content) > 4000 {
+		return Message{}, &ValidationError{Field: "content", Message: "must contain at most 4000 characters"}
 	}
 	if replyToMessageID != nil {
 		if *replyToMessageID == uuid.Nil {
@@ -404,7 +420,7 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	}
 	return s.store.CreateMessage(ctx, Message{
 		ID: id, ChannelID: channelID, Author: UserSummary{ID: userID}, Content: content,
-		ReplyToMessageID: replyToMessageID, CreatedAt: s.now().UTC(),
+		ReplyToMessageID: replyToMessageID, AttachmentIDs: attachmentIDs, CreatedAt: s.now().UTC(),
 	})
 }
 

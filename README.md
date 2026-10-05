@@ -40,6 +40,11 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `PUT` | `/api/v1/channels/{channel_id}/read-state` | Channelの既読位置を更新する |
 | `GET` | `/api/v1/users/@me/read-states` | 自分の既読位置を取得する |
 | `GET` | `/api/v1/guilds/{guild_id}/messages/search` | Guild内のMessageを検索する |
+| `POST` | `/api/v1/channels/{channel_id}/attachments/intents` | 添付ファイルの直接Upload URLを発行する |
+| `GET, DELETE` | `/api/v1/attachments/{attachment_id}` | 添付ファイルのmetadata取得と、未使用分の削除 |
+| `POST` | `/api/v1/attachments/{attachment_id}/finalize` | Uploadしたファイルを確定する |
+| `GET` | `/api/v1/attachments/{attachment_id}/content` | 短命なDownload URLへ`303`で移動する |
+| `POST` | `/api/v1/attachments/{attachment_id}/download-intents` | 短命なDownload URLをJSONで返す |
 | `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認する |
 | `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用してGuildへ参加する |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
@@ -80,6 +85,25 @@ Channelの種類は`TEXT`、`VOICE`、`CATEGORY`、`THREAD`、`DIRECT`です。
 ThreadとDirect MessageのMessageにも、返信、Reaction、入力中通知を使えます。
 `CHANNEL_CREATE`、`CHANNEL_UPDATE`、`CHANNEL_DELETE`は、Guild Channelなら`GUILDS`、Direct Messageなら`DIRECT_MESSAGES`のIntentを購読したSessionへ配信します。
 Direct MessageのMessage Eventも`DIRECT_MESSAGES`で配信し、`GUILD_MESSAGES`には流しません。
+
+## 添付ファイル
+
+添付ファイルはS3互換のObject Storage（AWS S3、MinIOなど）へClientが直接Uploadします。ファイル本体はAster Serverを経由しません。
+
+1. `POST /channels/{id}/attachments/intents`でファイル名、Media Type、サイズ（25 MiB以下）、SHA-256を宣言します。Serverは`PENDING`の添付ファイルを作り、1つのObjectだけへ`PUT`できる15分間有効なURLと、そのとき必ず送るHeaderを返します。
+2. ClientがURLへ`PUT`します。`Content-Type`と`x-amz-checksum-sha256`は署名に含まれるため、宣言と異なるファイルはObject Storageが拒否します。
+3. `POST /attachments/{id}/finalize`でObjectのサイズ、Media Type、Storageが報告するchecksumを宣言値と照合し、`READY`にします。未Uploadまたは不一致は`409 ATTACHMENT_MISMATCH`です。
+4. `POST /channels/{id}/messages`の`attachment_ids`に`READY`の添付ファイルを最大10件指定します。本文は添付ファイルだけのMessageなら省略できます。自分がUploadした未使用の添付ファイルを、同じChannelへ1回だけ使えます。
+
+Object Keyは`attachments/{channel_id}/{attachment_id}`で、Clientが指定したファイル名を含みません。
+Downloadは、Channelを参照できるUserだけが、短命な署名付きGET URLを得られます。
+画像（PNG、JPEG、GIF、WebP）以外は`Content-Disposition: attachment`を付けて配信し、Object Storageのoriginでブラウザ内に表示・実行されることを防ぎます。
+
+`PENDING`の添付ファイルはUploader本人にだけ見えます。1人が持てる未使用の添付ファイルは25件までで、超えると`429 UPLOAD_QUOTA_EXCEEDED`です。
+Messageに使われていない添付ファイルだけを削除でき、使用中は`409 ATTACHMENT_IN_USE`です。
+Message、Channel、Guild、Userの削除でAttachmentの行が消えると、Object Keyを削除Queueへ積み、1分ごとのJanitorがObjectを削除します。
+1時間以内に確定されない`PENDING`と、24時間以内にMessageへ使われない`READY`は、Janitorが期限切れとして削除します。
+`ASTER_STORAGE_ENDPOINT`を設定しない場合、添付ファイル関連のAPIは`503 STORAGE_UNAVAILABLE`を返します。
 
 ## 既読位置とMessage検索
 
@@ -185,7 +209,7 @@ Password は Argon2id の PHC 形式で保存します。
 
 ## ローカル起動
 
-Docker Compose を使う場合は、PostgreSQL、Migration、Server をまとめて起動できます。
+Docker Compose を使う場合は、PostgreSQL、MinIO（添付ファイル用）、Server をまとめて起動できます。
 
 ```bash
 make docker-up
@@ -221,6 +245,13 @@ Go Process を直接起動する場合は、`.env.example` に記載した環境
 | `ASTER_GATEWAY_IDENTIFY_TIMEOUT` | `10s` | 接続後に`IDENTIFY`または`RESUME`を待つ時間 |
 | `ASTER_GATEWAY_SESSION_RETENTION` | `2m` | 切断したGateway SessionとEventを保持する時間 |
 | `ASTER_GATEWAY_ALLOWED_ORIGINS` | Local Vite/Tauri Origins | Cross-Origin WebSocketを許可するOriginのComma区切り一覧 |
+| `ASTER_STORAGE_ENDPOINT` | なし | Object StorageのURL。未設定なら添付ファイルを無効にする |
+| `ASTER_STORAGE_PUBLIC_ENDPOINT` | `ASTER_STORAGE_ENDPOINT` | Clientへ返す署名付きURLのOrigin |
+| `ASTER_STORAGE_REGION` | `us-east-1` | Object StorageのRegion |
+| `ASTER_STORAGE_BUCKET` | なし | Bucket名。Endpoint設定時は必須 |
+| `ASTER_STORAGE_ACCESS_KEY` | なし | Access Key。Endpoint設定時は必須 |
+| `ASTER_STORAGE_SECRET_KEY` | なし | Secret Key。Endpoint設定時は必須 |
+| `ASTER_STORAGE_PATH_STYLE` | `true` | Bucketを`/bucket/key`形式で指定する（MinIO向け）。AWS S3では`false` |
 | `ASTER_AUTO_MIGRATE` | `false` | 起動時に未適用 Migration を実行するか |
 
 ## 検証
@@ -242,7 +273,8 @@ make test-integration
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
 - Channel単位の権限上書きと、Message検索の全文Indexは未実装です。
-- 添付ファイル、Voice Channelのjoin・state APIとGateway通知は未実装です。
+- Voice Channelのjoin・state APIとGateway通知は未実装です。
+- Object Storageへの署名付きURLはAWS公式のSigV4テストベクタで検証していますが、実際のS3やMinIOとの結合は自動テストしていません。Bucketには`PUT`を許可するCORS設定が必要です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。
