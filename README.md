@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reactionの永続化とWebSocket配信、入力中通知を提供します。
+現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Invite、Guild Memberの永続化とWebSocket配信、入力中通知を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -27,6 +27,13 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `GET, PATCH, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}` | Messageの取得、編集、削除 |
 | `PUT, DELETE` | `/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}` | Reactionの追加と解除 |
 | `POST` | `/api/v1/channels/{channel_id}/typing` | 入力開始または継続の通知 |
+| `GET` | `/api/v1/guilds/{guild_id}/members` | Guild Memberを参加順で取得する |
+| `GET, PATCH, DELETE` | `/api/v1/guilds/{guild_id}/members/{user_id}` | Memberの取得、Nickname変更、削除 |
+| `DELETE` | `/api/v1/guilds/{guild_id}/members/@me` | Guildから退出する |
+| `GET, POST` | `/api/v1/guilds/{guild_id}/invites` | 有効なInviteの一覧取得と作成 |
+| `DELETE` | `/api/v1/guilds/{guild_id}/invites/{invite_id}` | Inviteを無効化する |
+| `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認する |
+| `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用してGuildへ参加する |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
 
 一覧APIは不透明なCursorと`limit`を使用します。
@@ -39,6 +46,21 @@ Serverは返信元の表示用情報をResponseとGateway Eventへ含めます�
 ReactionはMessage、User、Unicode絵文字の組を一意に保存します。
 同じ追加または解除を繰り返しても件数は変化せず、APIは操作後の件数と認証済みUser自身の状態を返します。
 
+## InviteとMember
+
+Inviteは推測できないCodeを持ち、任意で有効期限（300秒〜7日）と利用回数（1〜1000）を設定できます。
+Inviteを使用できなくなる条件は次のとおりです。
+
+- 無効化した場合は、Codeが存在しないときと同じ`404 NOT_FOUND`を返します。
+- 期限切れまたは利用回数を使い切った場合は、参加を`409 INVITE_UNAVAILABLE`で拒否し、参加前の確認は`404 NOT_FOUND`を返します。
+
+参加済みのUserが同じInviteを再送した場合は、利用回数を消費せず既存のMemberを返します。
+このため、通信断後の再試行や、上限に達した直後の再送でも結果が変わりません。
+
+MemberのNicknameは本人またはGuild Ownerが変更できます。空文字列とnullは設定の解除として扱います。
+`role_ids`に空でない値を指定すると、Role保存が未実装のため`400 INVALID_REQUEST`を返します。
+MemberのPresenceは未追跡のため、常に`OFFLINE`を返します。
+
 ## Chatの暫定権限
 
 RoleとPermissionのProtocolが追加されるまで、権限は次の最小ルールで運用します。
@@ -46,6 +68,9 @@ RoleとPermissionのProtocolが追加されるまで、権限は次の最小ル�
 - Guild作成者をOwnerかつ最初のMemberにする
 - Guild MemberだけがGuild、Channel、Messageを参照できる
 - Guild OwnerだけがGuildとChannelを変更・削除できる
+- Guild OwnerだけがInviteの作成・一覧・無効化とMemberの削除を行える
+- Guild OwnerはMemberとして削除できず、退出もできない（Guildの削除が必要）
+- MemberのNicknameは本人またはGuild Ownerだけが変更できる
 - Guild MemberはText ChannelへMessageを投稿できる
 - MessageのAuthorだけが本文を編集できる
 - MessageのAuthorまたはGuild OwnerがMessageを削除できる
@@ -68,6 +93,15 @@ Clientは`/gateway/v1`へ接続すると`HELLO`を受信し、Access TokenとInt
 
 - `MESSAGE_REACTION_ADD`
 - `MESSAGE_REACTION_REMOVE`
+
+`GUILD_MEMBERS` Intentを購読したGuild MemberのSessionには、次のEventを配信します。
+
+- `MEMBER_JOIN`
+- `MEMBER_UPDATE`
+- `MEMBER_LEAVE`
+
+`MEMBER_LEAVE`は、削除または退出したUser本人のSessionにも配信します。
+本人は既にGuildの一覧から外れているため、Clientは受信したEventで表示中のGuildを閉じられます。
 
 `TYPING` Intentを購読したSessionには、Userの公開情報と通知時刻を含む`TYPING_START`を配信します。
 入力中通知はDatabaseへ保存せず、Clientが10秒で失効させます。
@@ -154,8 +188,8 @@ make test-integration
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
-- Guildへの招待・参加API、Member一覧、Role、Permissionは未実装です。
-- Category、DM、Thread、添付ファイルのAPIとGateway通知は未実装です。
+- Role、Permission、Presence、Message検索、Channel既読位置は未実装です。
+- Category、DM、Thread、添付ファイル、Voice Channelのjoin・state APIとGateway通知は未実装です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。
 - Migration の自動実行は単一の PostgreSQL Advisory Lock で直列化します。

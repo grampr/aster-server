@@ -215,6 +215,27 @@ func (h *hub) publishTypingStart(recipients []uuid.UUID, typing TypingStart) {
 	}
 }
 
+// publishToIntent dispatches one payload to every Session of the recipients that
+// subscribed to intent.
+func (h *hub) publishToIntent(intent int64, eventName string, recipients []uuid.UUID, payload any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+
+	seen := make(map[uuid.UUID]struct{}, len(recipients))
+	for _, userID := range recipients {
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		for _, s := range h.sessionsByUser[userID] {
+			if s.intents&intent != 0 {
+				h.dispatchLocked(s, eventName, payload)
+			}
+		}
+	}
+}
+
 func (h *hub) dispatchLocked(s *session, eventName string, data any) bool {
 	s.sequence++
 	sequence := s.sequence

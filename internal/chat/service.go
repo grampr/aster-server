@@ -430,7 +430,7 @@ func decodeCursor(value, kind string) (*pageCursor, error) {
 	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Kind != kind || cursor.ID == uuid.Nil {
 		return nil, &ValidationError{Field: "cursor", Message: "is invalid"}
 	}
-	if (kind == cursorGuilds || kind == cursorMessages) && cursor.Time.IsZero() {
+	if (kind == cursorGuilds || kind == cursorMessages || kind == cursorMembers) && cursor.Time.IsZero() {
 		return nil, &ValidationError{Field: "cursor", Message: "is invalid"}
 	}
 	if kind == cursorChannels && cursor.Position < 0 {

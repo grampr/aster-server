@@ -195,6 +195,18 @@ func (s *Service) PublishTypingStart(recipients []uuid.UUID, typing TypingStart)
 	s.hub.publishTypingStart(recipients, typing)
 }
 
+func (s *Service) PublishMemberJoin(recipients []uuid.UUID, member Member) {
+	s.hub.publishToIntent(intentGuildMembers, eventMemberJoin, recipients, memberEventPayload(member))
+}
+
+func (s *Service) PublishMemberUpdate(recipients []uuid.UUID, member Member) {
+	s.hub.publishToIntent(intentGuildMembers, eventMemberUpdate, recipients, memberEventPayload(member))
+}
+
+func (s *Service) PublishMemberLeave(recipients []uuid.UUID, guildID, userID uuid.UUID) {
+	s.hub.publishToIntent(intentGuildMembers, eventMemberLeave, recipients, memberLeavePayload{GuildID: guildID, UserID: userID})
+}
+
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {
 	messageType, payload, err := client.connection.ReadMessage()
 	if err != nil {

@@ -16,6 +16,7 @@ const (
 	opHello          = 10
 	opHeartbeatAck   = 11
 
+	intentGuildMembers   int64 = 1 << 1
 	intentGuildMessages  int64 = 1 << 2
 	intentMessageContent int64 = 1 << 4
 	intentReactions      int64 = 1 << 7
@@ -25,6 +26,9 @@ const (
 const (
 	eventReady                 = "READY"
 	eventResumed               = "RESUMED"
+	eventMemberJoin            = "MEMBER_JOIN"
+	eventMemberUpdate          = "MEMBER_UPDATE"
+	eventMemberLeave           = "MEMBER_LEAVE"
 	eventMessageCreate         = "MESSAGE_CREATE"
 	eventMessageUpdate         = "MESSAGE_UPDATE"
 	eventMessageDelete         = "MESSAGE_DELETE"
@@ -90,6 +94,14 @@ type TypingStart struct {
 	StartedAt time.Time
 }
 
+// Member is a Guild Member as delivered by MEMBER_JOIN and MEMBER_UPDATE.
+type Member struct {
+	GuildID  uuid.UUID
+	User     UserSummary
+	Nickname *string
+	JoinedAt time.Time
+}
+
 type UserSummary struct {
 	ID          uuid.UUID
 	DisplayName string
@@ -103,6 +115,7 @@ type messagePayload struct {
 	Content          *string              `json:"content"`
 	ReplyToMessageID *uuid.UUID           `json:"reply_to_message_id"`
 	ReplyTo          *messageReplyPayload `json:"reply_to"`
+	Attachments      []struct{}           `json:"attachments"`
 	CreatedAt        time.Time            `json:"created_at"`
 	EditedAt         *time.Time           `json:"edited_at"`
 }
@@ -149,7 +162,7 @@ func messageEventPayload(message Message, includeContent bool) messagePayload {
 	payload := messagePayload{
 		ID: message.ID, ChannelID: message.ChannelID,
 		Author:  userPayload{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
-		Content: content, ReplyToMessageID: message.ReplyToMessageID,
+		Content: content, ReplyToMessageID: message.ReplyToMessageID, Attachments: []struct{}{},
 		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 	}
 	if message.ReplyTo != nil {
@@ -166,4 +179,35 @@ func messageEventPayload(message Message, includeContent bool) messagePayload {
 		}
 	}
 	return payload
+}
+
+type memberPayload struct {
+	GuildID  uuid.UUID       `json:"guild_id"`
+	User     userPayload     `json:"user"`
+	Nickname *string         `json:"nickname"`
+	RoleIDs  []uuid.UUID     `json:"role_ids"`
+	JoinedAt time.Time       `json:"joined_at"`
+	Presence presencePayload `json:"presence"`
+}
+
+type presencePayload struct {
+	UserID     uuid.UUID `json:"user_id"`
+	Status     string    `json:"status"`
+	CustomText *string   `json:"custom_text"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type memberLeavePayload struct {
+	GuildID uuid.UUID `json:"guild_id"`
+	UserID  uuid.UUID `json:"user_id"`
+}
+
+func memberEventPayload(member Member) memberPayload {
+	return memberPayload{
+		GuildID:  member.GuildID,
+		User:     userPayload{ID: member.User.ID, DisplayName: member.User.DisplayName, AvatarURL: member.User.AvatarURL},
+		Nickname: member.Nickname, RoleIDs: []uuid.UUID{}, JoinedAt: member.JoinedAt,
+		// Presence is not tracked yet, so every Member is reported as offline.
+		Presence: presencePayload{UserID: member.User.ID, Status: "OFFLINE", UpdatedAt: member.JoinedAt},
+	}
 }

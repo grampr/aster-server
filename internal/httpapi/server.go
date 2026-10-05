@@ -55,6 +55,16 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}", server.deleteGuild)
 	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/channels", server.listChannels)
 	mux.HandleFunc("POST /api/v1/guilds/{guild_id}/channels", server.createChannel)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/members", server.listMembers)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/members/{user_id}", server.getMember)
+	mux.HandleFunc("PATCH /api/v1/guilds/{guild_id}/members/{user_id}", server.updateMember)
+	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/members/{user_id}", server.removeMember)
+	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/members/@me", server.leaveGuild)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/invites", server.listInvites)
+	mux.HandleFunc("POST /api/v1/guilds/{guild_id}/invites", server.createInvite)
+	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/invites/{invite_id}", server.deleteInvite)
+	mux.HandleFunc("GET /api/v1/invites/{invite_code}", server.getInvite)
+	mux.HandleFunc("POST /api/v1/invites/{invite_code}/accept", server.acceptInvite)
 	mux.HandleFunc("GET /api/v1/channels/{channel_id}", server.getChannel)
 	mux.HandleFunc("PATCH /api/v1/channels/{channel_id}", server.updateChannel)
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}", server.deleteChannel)
@@ -223,7 +233,7 @@ func (s *Server) writeError(writer http.ResponseWriter, request *http.Request, s
 	if cause != nil {
 		s.logger.Error("request failed", "request_id", requestID, "method", request.Method, "path", request.URL.Path, "error", cause)
 	}
-	if status == http.StatusUnauthorized || status == http.StatusConflict || status == http.StatusTooManyRequests {
+	if status == http.StatusUnauthorized || (status == http.StatusConflict && code != "INVITE_UNAVAILABLE") || status == http.StatusTooManyRequests {
 		s.audit(request, "authentication", "rejected", "code", code)
 	}
 	if status == http.StatusUnauthorized {

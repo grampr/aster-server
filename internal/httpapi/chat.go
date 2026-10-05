@@ -237,7 +237,15 @@ func (s *Server) createMessage(writer http.ResponseWriter, request *http.Request
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "Request body is invalid", err)
 		return
 	}
-	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, body.Content, body.ReplyToMessageId)
+	if body.AttachmentIds != nil && len(*body.AttachmentIds) > 0 {
+		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "attachment_ids: attachments are not supported yet", nil)
+		return
+	}
+	content := ""
+	if body.Content != nil {
+		content = *body.Content
+	}
+	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, content, body.ReplyToMessageId)
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
@@ -501,6 +509,8 @@ func (s *Server) handleChatError(writer http.ResponseWriter, request *http.Reque
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", validationError.Error(), nil)
 	case errors.Is(err, chat.ErrForbidden):
 		s.writeError(writer, request, http.StatusForbidden, "FORBIDDEN", "You do not have permission to perform this operation", nil)
+	case errors.Is(err, chat.ErrInviteUnavailable):
+		s.writeError(writer, request, http.StatusConflict, "INVITE_UNAVAILABLE", "Invite is expired or has no remaining uses", nil)
 	case errors.Is(err, chat.ErrNotFound):
 		s.writeError(writer, request, http.StatusNotFound, "NOT_FOUND", "Resource not found", nil)
 	default:
@@ -564,8 +574,9 @@ func guildResponse(guild chat.Guild) protocolgo.Guild {
 
 func channelResponse(channel chat.Channel) protocolgo.Channel {
 	return protocolgo.Channel{
-		Id: channel.ID, GuildId: channel.GuildID, Type: protocolgo.ChannelType(channel.Type),
-		Name: channel.Name, Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt,
+		Id: channel.ID, GuildId: &channel.GuildID, Type: protocolgo.ChannelType(channel.Type),
+		Name: &channel.Name, Topic: channel.Topic, Position: channel.Position, Recipients: []protocolgo.UserSummary{},
+		CreatedAt: channel.CreatedAt,
 	}
 }
 
@@ -575,7 +586,7 @@ func messageResponse(message chat.Message) protocolgo.Message {
 		reactions[index] = messageReactionResponse(reaction)
 	}
 	response := protocolgo.Message{
-		Id: message.ID, ChannelId: message.ChannelID, Content: message.Content,
+		Id: message.ID, ChannelId: message.ChannelID, Content: message.Content, Attachments: []protocolgo.Attachment{},
 		ReplyToMessageId: message.ReplyToMessageID, Reactions: reactions, CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 		Author: protocolgo.UserSummary{
 			Id: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarUrl: message.Author.AvatarURL,

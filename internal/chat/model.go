@@ -123,6 +123,8 @@ type pageCursor struct {
 }
 
 type Store interface {
+	MemberStore
+
 	CreateGuild(ctx context.Context, ownerID uuid.UUID, guild Guild) error
 	ListGuilds(ctx context.Context, userID uuid.UUID, cursor *pageCursor, limit int) ([]guildListRow, error)
 	GetGuild(ctx context.Context, userID, guildID uuid.UUID) (Guild, error)
@@ -143,4 +145,55 @@ type Store interface {
 	AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string, createdAt time.Time) (MessageReaction, bool, error)
 	RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error)
 	ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
+}
+
+var ErrInviteUnavailable = errors.New("invite is expired or has no remaining uses")
+
+const (
+	PresenceOffline = "OFFLINE"
+
+	cursorMembers = "members"
+)
+
+type Member struct {
+	GuildID  uuid.UUID
+	User     UserSummary
+	Nickname *string
+	JoinedAt time.Time
+}
+
+type Invite struct {
+	ID        uuid.UUID
+	Code      string
+	Guild     Guild
+	Inviter   UserSummary
+	Uses      int
+	MaxUses   *int
+	ExpiresAt *time.Time
+	CreatedAt time.Time
+}
+
+type CreateInviteInput struct {
+	ExpiresIn *int
+	MaxUses   *int
+}
+
+type UpdateMemberInput struct {
+	Nickname OptionalString
+	RoleIDs  *[]uuid.UUID
+}
+
+// MemberStore persists Guild Members and Invites.
+type MemberStore interface {
+	ListMembers(ctx context.Context, userID, guildID uuid.UUID, cursor *pageCursor, limit int) ([]Member, error)
+	GetMember(ctx context.Context, requesterID, guildID, userID uuid.UUID) (Member, error)
+	UpdateMemberNickname(ctx context.Context, guildID, userID uuid.UUID, nickname *string) (Member, error)
+	RemoveMember(ctx context.Context, guildID, userID uuid.UUID) error
+	ListGuildMemberIDs(ctx context.Context, guildID uuid.UUID) ([]uuid.UUID, error)
+
+	CreateInvite(ctx context.Context, invite Invite) (Invite, error)
+	ListInvites(ctx context.Context, guildID uuid.UUID, now time.Time) ([]Invite, error)
+	GetInvite(ctx context.Context, code string, now time.Time) (Invite, error)
+	RevokeInvite(ctx context.Context, guildID, inviteID uuid.UUID, revokedAt time.Time) error
+	AcceptInvite(ctx context.Context, code string, userID uuid.UUID, now time.Time) (Member, bool, error)
 }
