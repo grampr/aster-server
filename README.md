@@ -34,6 +34,7 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `DELETE` | `/api/v1/guilds/{guild_id}/invites/{invite_id}` | Inviteを無効化する |
 | `GET, POST` | `/api/v1/guilds/{guild_id}/roles` | Roleの一覧取得と作成 |
 | `PATCH, DELETE` | `/api/v1/guilds/{guild_id}/roles/{role_id}` | Roleの変更と削除 |
+| `PUT` | `/api/v1/users/@me/presence` | 自分のPresenceを更新する |
 | `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認する |
 | `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用してGuildへ参加する |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
@@ -61,7 +62,7 @@ Inviteを使用できなくなる条件は次のとおりです。
 
 MemberのNicknameは本人か、`MANAGE_MEMBERS`を持つ上位のMemberが変更できます。空文字列とnullは設定の解除として扱います。
 `role_ids`は割り当てるRoleの全体を置き換えます。既定Roleや存在しないRoleを指定すると`400 INVALID_REQUEST`です。
-MemberのPresenceは未追跡のため、常に`OFFLINE`を返します。
+Presenceは利用者が`PUT /users/@me/presence`で公開する短命な状態です。Process Memoryだけに保持するため、未設定のUserと再起動後は`OFFLINE`を返します。
 
 ## RoleとPermission
 
@@ -121,6 +122,8 @@ Clientは`/gateway/v1`へ接続すると`HELLO`を受信し、Access TokenとInt
 
 `MEMBER_LEAVE`は、削除または退出したUser本人のSessionにも配信します。
 本人は既にGuildの一覧から外れているため、Clientは受信したEventで表示中のGuildを閉じられます。
+
+`GUILD_PRESENCES` Intentを購読したSessionには、Presenceを更新したUserが参加するGuildごとに`PRESENCE_UPDATE`を配信します。
 
 `TYPING` Intentを購読したSessionには、Userの公開情報と通知時刻を含む`TYPING_START`を配信します。
 入力中通知はDatabaseへ保存せず、Clientが10秒で失効させます。
@@ -207,7 +210,7 @@ make test-integration
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
-- Presence、Channel単位の権限上書き、Message検索、Channel既読位置は未実装です。
+- Channel単位の権限上書き、Message検索、Channel既読位置は未実装です。
 - Category、DM、Thread、添付ファイル、Voice Channelのjoin・state APIとGateway通知は未実装です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。

@@ -83,7 +83,7 @@ func TestGuildInvitesAndMembers(t *testing.T) {
 	if message := readGatewayMessage(t, bobGateway); message.Op != 10 {
 		t.Fatalf("expected HELLO, got %+v", message)
 	}
-	if err := bobGateway.WriteJSON(map[string]any{"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 2}}); err != nil {
+	if err := bobGateway.WriteJSON(map[string]any{"op": 2, "d": map[string]any{"token": bobSession.AccessToken, "intents": 2 | 64}}); err != nil {
 		t.Fatal(err)
 	}
 	if message := readGatewayMessage(t, bobGateway); message.Type != "READY" {
@@ -180,6 +180,30 @@ func TestGuildInvitesAndMembers(t *testing.T) {
 		t.Fatalf("nickname must be cleared: %+v", cleared)
 	}
 	assertMemberEvent(t, readGatewayMessage(t, bobGateway), "MEMBER_UPDATE", guild.Id, bob.Id, nil)
+
+	// Presence is published by the user, reported on Members and pushed to the Guild.
+	requestJSON[protocolgo.Error](t, client, http.MethodPut, base+"/users/@me/presence", map[string]any{"status": "OFFLINE"}, carolSession.AccessToken, http.StatusBadRequest)
+	presence := requestJSON[protocolgo.Presence](t, client, http.MethodPut, base+"/users/@me/presence", map[string]any{"status": "DO_NOT_DISTURB", "custom_text": " 作業中 "}, carolSession.AccessToken, http.StatusOK)
+	if presence.UserId != carol.Id || presence.Status != protocolgo.PresenceStatusDONOTDISTURB || presence.CustomText == nil || *presence.CustomText != "作業中" {
+		t.Fatalf("unexpected presence: %+v", presence)
+	}
+	presenceEvent := readGatewayMessage(t, bobGateway)
+	var presenceData struct {
+		GuildID  uuid.UUID `json:"guild_id"`
+		Presence struct {
+			UserID uuid.UUID `json:"user_id"`
+			Status string    `json:"status"`
+		} `json:"presence"`
+	}
+	if err := json.Unmarshal(presenceEvent.Data, &presenceData); err != nil {
+		t.Fatal(err)
+	}
+	if presenceEvent.Type != "PRESENCE_UPDATE" || presenceData.GuildID != guild.Id || presenceData.Presence.UserID != carol.Id || presenceData.Presence.Status != "DO_NOT_DISTURB" {
+		t.Fatalf("unexpected presence event: %+v %+v", presenceEvent, presenceData)
+	}
+	if member := requestJSON[protocolgo.GuildMember](t, client, http.MethodGet, guildPath+"/members/"+carol.Id.String(), nil, aliceSession.AccessToken, http.StatusOK); member.Presence.Status != protocolgo.PresenceStatusDONOTDISTURB {
+		t.Fatalf("member must report its presence: %+v", member)
+	}
 
 	// Only the Owner removes members, and the Owner can neither be removed nor leave.
 	requestJSON[protocolgo.Error](t, client, http.MethodDelete, guildPath+"/members/"+carol.Id.String(), nil, bobSession.AccessToken, http.StatusForbidden)

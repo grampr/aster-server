@@ -232,6 +232,12 @@ func (s *Server) publishMember(request *http.Request, event string, member chat.
 		GuildID: member.GuildID, Nickname: member.Nickname, RoleIDs: member.RoleIDs, JoinedAt: member.JoinedAt,
 		User: gateway.UserSummary{ID: member.User.ID, DisplayName: member.User.DisplayName, AvatarURL: member.User.AvatarURL},
 	}
+	if member.Presence != nil {
+		payload.Presence = &gateway.Presence{
+			UserID: member.Presence.UserID, Status: member.Presence.Status,
+			CustomText: member.Presence.CustomText, UpdatedAt: member.Presence.UpdatedAt,
+		}
+	}
 	if event == "join" {
 		s.gateway.PublishMemberJoin(recipients, payload)
 		return
@@ -255,11 +261,17 @@ func (s *Server) publishMemberLeave(request *http.Request, guildID, userID uuid.
 }
 
 func memberResponse(member chat.Member) protocolgo.GuildMember {
+	presence := protocolgo.Presence{UserId: member.User.ID, Status: protocolgo.PresenceStatusOFFLINE, UpdatedAt: member.JoinedAt}
+	if member.Presence != nil {
+		presence = protocolgo.Presence{
+			UserId: member.Presence.UserID, Status: protocolgo.PresenceStatus(member.Presence.Status),
+			CustomText: member.Presence.CustomText, UpdatedAt: member.Presence.UpdatedAt,
+		}
+	}
 	return protocolgo.GuildMember{
 		GuildId: member.GuildID, Nickname: member.Nickname, JoinedAt: member.JoinedAt, RoleIds: roleIDsResponse(member.RoleIDs),
-		User: protocolgo.UserSummary{Id: member.User.ID, DisplayName: member.User.DisplayName, AvatarUrl: member.User.AvatarURL},
-		// Presence is not tracked yet, so every Member is reported as offline.
-		Presence: protocolgo.Presence{UserId: member.User.ID, Status: protocolgo.PresenceStatusOFFLINE, UpdatedAt: member.JoinedAt},
+		User:     protocolgo.UserSummary{Id: member.User.ID, DisplayName: member.User.DisplayName, AvatarUrl: member.User.AvatarURL},
+		Presence: presence,
 	}
 }
 
@@ -275,4 +287,46 @@ func roleIDsResponse(ids []uuid.UUID) []protocolgo.UUID {
 	response := make([]protocolgo.UUID, len(ids))
 	copy(response, ids)
 	return response
+}
+
+func (s *Server) updatePresence(writer http.ResponseWriter, request *http.Request) {
+	user, ok := s.chatUser(writer, request, "presence_update")
+	if !ok {
+		return
+	}
+	var body struct {
+		Status     string  `json:"status"`
+		CustomText *string `json:"custom_text"`
+	}
+	if err := decodeJSON(writer, request, &body); err != nil {
+		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "Request body is invalid", err)
+		return
+	}
+	presence, guildIDs, err := s.chat.SetPresence(request.Context(), user.ID, body.Status, body.CustomText)
+	if err != nil {
+		s.handleChatError(writer, request, err)
+		return
+	}
+	s.publishPresence(request, guildIDs, presence)
+	writeJSON(writer, http.StatusOK, protocolgo.Presence{
+		UserId: presence.UserID, Status: protocolgo.PresenceStatus(presence.Status),
+		CustomText: presence.CustomText, UpdatedAt: presence.UpdatedAt,
+	})
+}
+
+func (s *Server) publishPresence(request *http.Request, guildIDs []uuid.UUID, presence chat.Presence) {
+	if s.gateway == nil {
+		return
+	}
+	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
+	defer cancel()
+	payload := gateway.Presence{UserID: presence.UserID, Status: presence.Status, CustomText: presence.CustomText, UpdatedAt: presence.UpdatedAt}
+	for _, guildID := range guildIDs {
+		recipients, err := s.chat.ListGuildMemberIDs(publishContext, guildID)
+		if err != nil {
+			s.logger.Error("list gateway presence recipients", "request_id", requestIDFromContext(request), "guild_id", guildID, "error", err)
+			continue
+		}
+		s.gateway.PublishPresenceUpdate(recipients, guildID, payload)
+	}
 }

@@ -48,6 +48,7 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("POST /api/v1/auth/token/refresh", server.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", server.logout)
 	mux.HandleFunc("GET /api/v1/users/@me", server.currentUser)
+	mux.HandleFunc("PUT /api/v1/users/@me/presence", server.updatePresence)
 	mux.HandleFunc("GET /api/v1/guilds", server.listGuilds)
 	mux.HandleFunc("POST /api/v1/guilds", server.createGuild)
 	mux.HandleFunc("GET /api/v1/guilds/{guild_id}", server.getGuild)

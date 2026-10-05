@@ -21,15 +21,16 @@ const (
 )
 
 type Service struct {
-	store Store
-	now   func() time.Time
+	store    Store
+	now      func() time.Time
+	presence *presenceTracker
 }
 
 func NewService(store Store) (*Service, error) {
 	if store == nil {
 		return nil, errors.New("chat store is required")
 	}
-	return &Service{store: store, now: time.Now}, nil
+	return &Service{store: store, now: time.Now, presence: newPresenceTracker()}, nil
 }
 
 func (s *Service) CreateGuild(ctx context.Context, ownerID uuid.UUID, input CreateGuildInput) (Guild, error) {

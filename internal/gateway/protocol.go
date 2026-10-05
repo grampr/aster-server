@@ -18,6 +18,7 @@ const (
 
 	intentGuildMembers   int64 = 1 << 1
 	intentGuildMessages  int64 = 1 << 2
+	intentGuildPresences int64 = 1 << 6
 	intentMessageContent int64 = 1 << 4
 	intentReactions      int64 = 1 << 7
 	intentTyping         int64 = 1 << 9
@@ -29,6 +30,7 @@ const (
 	eventMemberJoin            = "MEMBER_JOIN"
 	eventMemberUpdate          = "MEMBER_UPDATE"
 	eventMemberLeave           = "MEMBER_LEAVE"
+	eventPresenceUpdate        = "PRESENCE_UPDATE"
 	eventMessageCreate         = "MESSAGE_CREATE"
 	eventMessageUpdate         = "MESSAGE_UPDATE"
 	eventMessageDelete         = "MESSAGE_DELETE"
@@ -101,6 +103,15 @@ type Member struct {
 	Nickname *string
 	RoleIDs  []uuid.UUID
 	JoinedAt time.Time
+	Presence *Presence
+}
+
+// Presence is a Member's short-lived public status.
+type Presence struct {
+	UserID     uuid.UUID
+	Status     string
+	CustomText *string
+	UpdatedAt  time.Time
 }
 
 type UserSummary struct {
@@ -203,14 +214,27 @@ type memberLeavePayload struct {
 	UserID  uuid.UUID `json:"user_id"`
 }
 
+func presenceEventPayload(presence Presence) presencePayload {
+	return presencePayload{UserID: presence.UserID, Status: presence.Status, CustomText: presence.CustomText, UpdatedAt: presence.UpdatedAt}
+}
+
+type presenceUpdatePayload struct {
+	GuildID  uuid.UUID       `json:"guild_id"`
+	Presence presencePayload `json:"presence"`
+}
+
 func memberEventPayload(member Member) memberPayload {
-	return memberPayload{
+	payload := memberPayload{
 		GuildID:  member.GuildID,
 		User:     userPayload{ID: member.User.ID, DisplayName: member.User.DisplayName, AvatarURL: member.User.AvatarURL},
 		Nickname: member.Nickname, RoleIDs: nonNilIDs(member.RoleIDs), JoinedAt: member.JoinedAt,
 		// Presence is not tracked yet, so every Member is reported as offline.
 		Presence: presencePayload{UserID: member.User.ID, Status: "OFFLINE", UpdatedAt: member.JoinedAt},
 	}
+	if member.Presence != nil {
+		payload.Presence = presenceEventPayload(*member.Presence)
+	}
+	return payload
 }
 
 func nonNilIDs(ids []uuid.UUID) []uuid.UUID {

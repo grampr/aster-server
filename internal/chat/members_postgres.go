@@ -140,6 +140,26 @@ func (s *PostgresStore) RemoveMember(ctx context.Context, guildID, userID uuid.U
 	return nil
 }
 
+func (s *PostgresStore) ListUserGuildIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT guild_id FROM guild_members WHERE user_id = $1 ORDER BY guild_id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list user guild IDs: %w", err)
+	}
+	defer rows.Close()
+	guildIDs := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var guildID uuid.UUID
+		if err := rows.Scan(&guildID); err != nil {
+			return nil, fmt.Errorf("scan user guild ID: %w", err)
+		}
+		guildIDs = append(guildIDs, guildID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate user guild IDs: %w", err)
+	}
+	return guildIDs, nil
+}
+
 func (s *PostgresStore) ListGuildMemberIDs(ctx context.Context, guildID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.pool.Query(ctx, `SELECT user_id FROM guild_members WHERE guild_id = $1 ORDER BY user_id`, guildID)
 	if err != nil {

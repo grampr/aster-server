@@ -207,6 +207,10 @@ func (s *Service) PublishMemberLeave(recipients []uuid.UUID, guildID, userID uui
 	s.hub.publishToIntent(intentGuildMembers, eventMemberLeave, recipients, memberLeavePayload{GuildID: guildID, UserID: userID})
 }
 
+func (s *Service) PublishPresenceUpdate(recipients []uuid.UUID, guildID uuid.UUID, presence Presence) {
+	s.hub.publishToIntent(intentGuildPresences, eventPresenceUpdate, recipients, presenceUpdatePayload{GuildID: guildID, Presence: presenceEventPayload(presence)})
+}
+
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {
 	messageType, payload, err := client.connection.ReadMessage()
 	if err != nil {

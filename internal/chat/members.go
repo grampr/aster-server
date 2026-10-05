@@ -36,6 +36,9 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID uuid.UUID, cu
 	if hasMore {
 		rows = rows[:limit]
 	}
+	for index := range rows {
+		s.applyPresence(&rows[index])
+	}
 	var next *string
 	if hasMore && len(rows) > 0 {
 		last := rows[len(rows)-1]
@@ -49,7 +52,12 @@ func (s *Service) ListMembers(ctx context.Context, userID, guildID uuid.UUID, cu
 }
 
 func (s *Service) GetMember(ctx context.Context, requesterID, guildID, userID uuid.UUID) (Member, error) {
-	return s.store.GetMember(ctx, requesterID, guildID, userID)
+	member, err := s.store.GetMember(ctx, requesterID, guildID, userID)
+	if err != nil {
+		return Member{}, err
+	}
+	s.applyPresence(&member)
+	return member, nil
 }
 
 // UpdateMember changes a Member's nickname and Roles. A Member may change their own
@@ -94,10 +102,17 @@ func (s *Service) UpdateMember(ctx context.Context, requesterID, guildID, userID
 			return Member{}, err
 		}
 	}
+	var updated Member
 	if input.Nickname.Set {
-		return s.store.UpdateMemberNickname(ctx, guildID, userID, nickname)
+		updated, err = s.store.UpdateMemberNickname(ctx, guildID, userID, nickname)
+	} else {
+		updated, err = s.store.GetMemberByID(ctx, guildID, userID)
 	}
-	return s.store.GetMemberByID(ctx, guildID, userID)
+	if err != nil {
+		return Member{}, err
+	}
+	s.applyPresence(&updated)
+	return updated, nil
 }
 
 // checkOutranksMember rejects actions against the Owner or a Member whose highest
@@ -197,7 +212,12 @@ func (s *Service) AcceptInvite(ctx context.Context, userID uuid.UUID, code strin
 	if !validInviteCode(code) {
 		return Member{}, false, ErrNotFound
 	}
-	return s.store.AcceptInvite(ctx, code, userID, s.now().UTC())
+	member, joined, err := s.store.AcceptInvite(ctx, code, userID, s.now().UTC())
+	if err != nil {
+		return Member{}, false, err
+	}
+	s.applyPresence(&member)
+	return member, joined, nil
 }
 
 func newInviteCode() (string, error) {

@@ -162,6 +162,7 @@ type Member struct {
 	Nickname *string
 	RoleIDs  []uuid.UUID
 	JoinedAt time.Time
+	Presence *Presence
 }
 
 type Invite struct {
@@ -192,6 +193,7 @@ type MemberStore interface {
 	UpdateMemberNickname(ctx context.Context, guildID, userID uuid.UUID, nickname *string) (Member, error)
 	GetMemberByID(ctx context.Context, guildID, userID uuid.UUID) (Member, error)
 	RemoveMember(ctx context.Context, guildID, userID uuid.UUID) error
+	ListUserGuildIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 	ListGuildMemberIDs(ctx context.Context, guildID uuid.UUID) ([]uuid.UUID, error)
 
 	CreateInvite(ctx context.Context, invite Invite) (Invite, error)
