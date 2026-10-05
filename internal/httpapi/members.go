@@ -74,7 +74,7 @@ func (s *Server) updateMember(writer http.ResponseWriter, request *http.Request)
 		s.handleChatError(writer, request, err)
 		return
 	}
-	if body.Nickname.Set {
+	if body.Nickname.Set || body.RoleIDs != nil {
 		s.publishMember(request, "update", member)
 	}
 	writeJSON(writer, http.StatusOK, memberResponse(member))
@@ -229,7 +229,7 @@ func (s *Server) publishMember(request *http.Request, event string, member chat.
 		return
 	}
 	payload := gateway.Member{
-		GuildID: member.GuildID, Nickname: member.Nickname, JoinedAt: member.JoinedAt,
+		GuildID: member.GuildID, Nickname: member.Nickname, RoleIDs: member.RoleIDs, JoinedAt: member.JoinedAt,
 		User: gateway.UserSummary{ID: member.User.ID, DisplayName: member.User.DisplayName, AvatarURL: member.User.AvatarURL},
 	}
 	if event == "join" {
@@ -256,7 +256,7 @@ func (s *Server) publishMemberLeave(request *http.Request, guildID, userID uuid.
 
 func memberResponse(member chat.Member) protocolgo.GuildMember {
 	return protocolgo.GuildMember{
-		GuildId: member.GuildID, Nickname: member.Nickname, JoinedAt: member.JoinedAt, RoleIds: []protocolgo.UUID{},
+		GuildId: member.GuildID, Nickname: member.Nickname, JoinedAt: member.JoinedAt, RoleIds: roleIDsResponse(member.RoleIDs),
 		User: protocolgo.UserSummary{Id: member.User.ID, DisplayName: member.User.DisplayName, AvatarUrl: member.User.AvatarURL},
 		// Presence is not tracked yet, so every Member is reported as offline.
 		Presence: protocolgo.Presence{UserId: member.User.ID, Status: protocolgo.PresenceStatusOFFLINE, UpdatedAt: member.JoinedAt},
@@ -269,4 +269,10 @@ func inviteResponse(invite chat.Invite) protocolgo.Invite {
 		Inviter: protocolgo.UserSummary{Id: invite.Inviter.ID, DisplayName: invite.Inviter.DisplayName, AvatarUrl: invite.Inviter.AvatarURL},
 		Uses:    invite.Uses, MaxUses: invite.MaxUses, ExpiresAt: invite.ExpiresAt, CreatedAt: invite.CreatedAt,
 	}
+}
+
+func roleIDsResponse(ids []uuid.UUID) []protocolgo.UUID {
+	response := make([]protocolgo.UUID, len(ids))
+	copy(response, ids)
+	return response
 }

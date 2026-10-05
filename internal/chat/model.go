@@ -124,6 +124,7 @@ type pageCursor struct {
 
 type Store interface {
 	MemberStore
+	RoleStore
 
 	CreateGuild(ctx context.Context, ownerID uuid.UUID, guild Guild) error
 	ListGuilds(ctx context.Context, userID uuid.UUID, cursor *pageCursor, limit int) ([]guildListRow, error)
@@ -141,7 +142,7 @@ type Store interface {
 	ListMessages(ctx context.Context, userID, channelID uuid.UUID, cursor *pageCursor, limit int) ([]Message, error)
 	GetMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) (Message, error)
 	UpdateMessage(ctx context.Context, authorID, channelID, messageID uuid.UUID, content string, editedAt time.Time) (Message, error)
-	DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error
+	DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID, canManage bool) error
 	AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string, createdAt time.Time) (MessageReaction, bool, error)
 	RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error)
 	ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
@@ -159,6 +160,7 @@ type Member struct {
 	GuildID  uuid.UUID
 	User     UserSummary
 	Nickname *string
+	RoleIDs  []uuid.UUID
 	JoinedAt time.Time
 }
 
@@ -188,6 +190,7 @@ type MemberStore interface {
 	ListMembers(ctx context.Context, userID, guildID uuid.UUID, cursor *pageCursor, limit int) ([]Member, error)
 	GetMember(ctx context.Context, requesterID, guildID, userID uuid.UUID) (Member, error)
 	UpdateMemberNickname(ctx context.Context, guildID, userID uuid.UUID, nickname *string) (Member, error)
+	GetMemberByID(ctx context.Context, guildID, userID uuid.UUID) (Member, error)
 	RemoveMember(ctx context.Context, guildID, userID uuid.UUID) error
 	ListGuildMemberIDs(ctx context.Context, guildID uuid.UUID) ([]uuid.UUID, error)
 
@@ -196,4 +199,39 @@ type MemberStore interface {
 	GetInvite(ctx context.Context, code string, now time.Time) (Invite, error)
 	RevokeInvite(ctx context.Context, guildID, inviteID uuid.UUID, revokedAt time.Time) error
 	AcceptInvite(ctx context.Context, code string, userID uuid.UUID, now time.Time) (Member, bool, error)
+}
+
+type Role struct {
+	ID          uuid.UUID
+	GuildID     uuid.UUID
+	Name        string
+	Color       *string
+	Permissions int64
+	Position    int
+	Managed     bool
+	IsDefault   bool
+	CreatedAt   time.Time
+}
+
+type CreateRoleInput struct {
+	Name        string
+	Color       *string
+	Permissions *int64
+}
+
+type UpdateRoleInput struct {
+	Name        *string
+	Color       OptionalString
+	Permissions *int64
+	Position    *int
+}
+
+// RoleStore persists Roles and Role assignments.
+type RoleStore interface {
+	GetAccess(ctx context.Context, guildID, userID uuid.UUID) (Access, error)
+	ListRoles(ctx context.Context, guildID uuid.UUID) ([]Role, error)
+	CreateRole(ctx context.Context, role Role) (Role, error)
+	UpdateRole(ctx context.Context, role Role) (Role, error)
+	DeleteRole(ctx context.Context, guildID, roleID uuid.UUID) error
+	SetMemberRoles(ctx context.Context, guildID, userID uuid.UUID, roleIDs []uuid.UUID) error
 }

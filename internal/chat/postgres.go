@@ -36,6 +36,17 @@ func (s *PostgresStore) CreateGuild(ctx context.Context, ownerID uuid.UUID, guil
 	); err != nil {
 		return fmt.Errorf("insert guild owner membership: %w", err)
 	}
+	roleID, err := newUUIDv7()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO guild_roles (id, guild_id, name, color, permissions, position, managed, is_default, created_at)
+		VALUES ($1, $2, '@everyone', NULL, $3, 0, TRUE, TRUE, $4)`,
+		roleID, guild.ID, int32(DefaultRolePermissions), guild.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("insert default role: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit guild creation: %w", err)
 	}
@@ -98,7 +109,7 @@ func (s *PostgresStore) UpdateGuild(ctx context.Context, ownerID, guildID uuid.U
 		SET name = COALESCE($3, name),
 		    description = CASE WHEN $4 THEN $5 ELSE description END,
 		    updated_at = $6
-		WHERE id = $1 AND owner_id = $2
+		WHERE id = $1 AND EXISTS (SELECT 1 FROM guild_members gm WHERE gm.guild_id = guilds.id AND gm.user_id = $2)
 		RETURNING id, owner_id, name, description, icon_url, created_at`,
 		guildID, ownerID, input.Name, input.Description.Set, input.Description.Value, updatedAt,
 	).Scan(&guild.ID, &guild.OwnerID, &guild.Name, &guild.Description, &guild.IconURL, &guild.CreatedAt)
@@ -216,7 +227,8 @@ func (s *PostgresStore) UpdateChannel(ctx context.Context, ownerID, channelID uu
 		    position = COALESCE($6, c.position),
 		    updated_at = $7
 		FROM guilds g
-		WHERE c.id = $1 AND g.id = c.guild_id AND g.owner_id = $2
+		WHERE c.id = $1 AND g.id = c.guild_id
+		  AND EXISTS (SELECT 1 FROM guild_members gm WHERE gm.guild_id = g.id AND gm.user_id = $2)
 		RETURNING c.id, c.guild_id, c.type, c.name, c.topic, c.position, c.created_at`,
 		channelID, ownerID, input.Name, input.Topic.Set, input.Topic.Value, input.Position, updatedAt,
 	).Scan(&channel.ID, &channel.GuildID, &channel.Type, &channel.Name, &channel.Topic, &channel.Position, &channel.CreatedAt)
@@ -232,7 +244,8 @@ func (s *PostgresStore) UpdateChannel(ctx context.Context, ownerID, channelID uu
 func (s *PostgresStore) DeleteChannel(ctx context.Context, ownerID, channelID uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM channels c USING guilds g
-		WHERE c.id = $1 AND g.id = c.guild_id AND g.owner_id = $2`, channelID, ownerID)
+		WHERE c.id = $1 AND g.id = c.guild_id
+		  AND EXISTS (SELECT 1 FROM guild_members gm WHERE gm.guild_id = g.id AND gm.user_id = $2)`, channelID, ownerID)
 	if err != nil {
 		return fmt.Errorf("delete channel: %w", err)
 	}
@@ -394,14 +407,14 @@ func (s *PostgresStore) UpdateMessage(ctx context.Context, authorID, channelID, 
 	return message, nil
 }
 
-func (s *PostgresStore) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error {
+func (s *PostgresStore) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID, canManage bool) error {
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM messages m
 		USING channels c, guilds g, guild_members gm
 		WHERE m.id = $1 AND m.channel_id = $2
 		  AND c.id = m.channel_id AND g.id = c.guild_id
 		  AND gm.guild_id = g.id AND gm.user_id = $3
-		  AND (m.author_id = $3 OR g.owner_id = $3)`, messageID, channelID, userID)
+		  AND (m.author_id = $3 OR $4)`, messageID, channelID, userID, canManage)
 	if err != nil {
 		return fmt.Errorf("delete message: %w", err)
 	}

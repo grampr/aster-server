@@ -1,7 +1,7 @@
 # Aster Server
 
 Aster Server は、Aster の REST API、WebSocket Gateway、永続データを管理する Go Backend です。
-現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Invite、Guild Memberの永続化とWebSocket配信、入力中通知を提供します。
+現在はPassword認証、Aster Session、Guild、Channel、Message、返信、Reaction、Invite、Role、Guild Memberの永続化とWebSocket配信、入力中通知を提供します。
 
 > [!WARNING]
 > このリポジトリは初期実装段階です。
@@ -32,6 +32,8 @@ API の通信契約は [Aster Protocol](https://github.com/grampr/Aster-protocol
 | `DELETE` | `/api/v1/guilds/{guild_id}/members/@me` | Guildから退出する |
 | `GET, POST` | `/api/v1/guilds/{guild_id}/invites` | 有効なInviteの一覧取得と作成 |
 | `DELETE` | `/api/v1/guilds/{guild_id}/invites/{invite_id}` | Inviteを無効化する |
+| `GET, POST` | `/api/v1/guilds/{guild_id}/roles` | Roleの一覧取得と作成 |
+| `PATCH, DELETE` | `/api/v1/guilds/{guild_id}/roles/{role_id}` | Roleの変更と削除 |
 | `GET` | `/api/v1/invites/{invite_code}` | Inviteの参加先を確認する |
 | `POST` | `/api/v1/invites/{invite_code}/accept` | Inviteを使用してGuildへ参加する |
 | `GET` | `/gateway/v1` | WebSocket GatewayへUpgradeする |
@@ -57,23 +59,40 @@ Inviteを使用できなくなる条件は次のとおりです。
 参加済みのUserが同じInviteを再送した場合は、利用回数を消費せず既存のMemberを返します。
 このため、通信断後の再試行や、上限に達した直後の再送でも結果が変わりません。
 
-MemberのNicknameは本人またはGuild Ownerが変更できます。空文字列とnullは設定の解除として扱います。
-`role_ids`に空でない値を指定すると、Role保存が未実装のため`400 INVALID_REQUEST`を返します。
+MemberのNicknameは本人か、`MANAGE_MEMBERS`を持つ上位のMemberが変更できます。空文字列とnullは設定の解除として扱います。
+`role_ids`は割り当てるRoleの全体を置き換えます。既定Roleや存在しないRoleを指定すると`400 INVALID_REQUEST`です。
 MemberのPresenceは未追跡のため、常に`OFFLINE`を返します。
 
-## Chatの暫定権限
+## RoleとPermission
 
-RoleとPermissionのProtocolが追加されるまで、権限は次の最小ルールで運用します。
+各Guildには、全Memberへ適用される管理対象の既定Role（`@everyone`、position 0）が作られます。
+既定Roleの権限は`VIEW_CHANNEL`、`SEND_MESSAGES`、`CONNECT`、`SPEAK`、`STREAM`です。
+Memberの権限は、既定Roleと割り当てられたRoleの権限の論理和です。`role_ids`には既定Roleを含めません。
+Guild Ownerは常に全権限を持ち、Roleの階層に縛られません。
 
-- Guild作成者をOwnerかつ最初のMemberにする
-- Guild MemberだけがGuild、Channel、Messageを参照できる
-- Guild OwnerだけがGuildとChannelを変更・削除できる
-- Guild OwnerだけがInviteの作成・一覧・無効化とMemberの削除を行える
+| 操作 | 必要な権限 |
+| --- | --- |
+| Guildの変更、Inviteの一覧・無効化 | `MANAGE_GUILD` |
+| Inviteの作成 | `CREATE_INVITE` |
+| Channelの作成・変更・削除 | `MANAGE_CHANNELS` |
+| Messageの投稿 | `SEND_MESSAGES` |
+| 他人のMessageの削除 | `MANAGE_MESSAGES` |
+| Memberの削除、他人のNickname変更 | `MANAGE_MEMBERS` |
+| Roleの作成・変更・削除、Roleの割り当て | `MANAGE_ROLES` |
+
+RoleはpositionがOwner以外の操作者の最上位Roleより小さい場合だけ管理できます。
+Owner以外が作成したRoleはposition 1から始まります。
+操作者が持たない権限は、Roleへ付与も剥奪もできません。
+対象Memberが操作者以上のRoleを持つ場合と、Ownerに対する操作は`403 FORBIDDEN`です。
+Guildの削除はOwner専用です。
+
+その他の規則は次のとおりです。
+
+- Guild MemberだけがGuild、Channel、Messageを参照できる（Channel単位の権限上書きは未実装）
 - Guild OwnerはMemberとして削除できず、退出もできない（Guildの削除が必要）
-- MemberのNicknameは本人またはGuild Ownerだけが変更できる
-- Guild MemberはText ChannelへMessageを投稿できる
+- MemberのNicknameは本人が変更できる
 - MessageのAuthorだけが本文を編集できる
-- MessageのAuthorまたはGuild OwnerがMessageを削除できる
+- MessageのAuthorは自分のMessageを削除できる
 
 存在しないResourceと、認証済みUserから参照できないResourceは、どちらも`404 NOT_FOUND`として返します。
 これにより、参加していないGuildやChannelの存在をAPIから推測できないようにします。
@@ -188,7 +207,7 @@ make test-integration
 
 - Rate Limit は Process Memory に保存するため、複数 Instance 間では共有しません。
 - Email Verification、Password Reset、Account Link、Google OIDC は未実装です。
-- Role、Permission、Presence、Message検索、Channel既読位置は未実装です。
+- Presence、Channel単位の権限上書き、Message検索、Channel既読位置は未実装です。
 - Category、DM、Thread、添付ファイル、Voice Channelのjoin・state APIとGateway通知は未実装です。
 - Gateway SessionとEvent BufferはProcess Memoryにあるため、別InstanceへのResumeとInstance間配信には未対応です。
 - Access Token は現在の Session ごとに一つだけ有効であり、Refresh 時に直前の Access Token を失効させます。

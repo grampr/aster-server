@@ -99,6 +99,7 @@ type Member struct {
 	GuildID  uuid.UUID
 	User     UserSummary
 	Nickname *string
+	RoleIDs  []uuid.UUID
 	JoinedAt time.Time
 }
 
@@ -206,8 +207,15 @@ func memberEventPayload(member Member) memberPayload {
 	return memberPayload{
 		GuildID:  member.GuildID,
 		User:     userPayload{ID: member.User.ID, DisplayName: member.User.DisplayName, AvatarURL: member.User.AvatarURL},
-		Nickname: member.Nickname, RoleIDs: []uuid.UUID{}, JoinedAt: member.JoinedAt,
+		Nickname: member.Nickname, RoleIDs: nonNilIDs(member.RoleIDs), JoinedAt: member.JoinedAt,
 		// Presence is not tracked yet, so every Member is reported as offline.
 		Presence: presencePayload{UserID: member.User.ID, Status: "OFFLINE", UpdatedAt: member.JoinedAt},
 	}
+}
+
+func nonNilIDs(ids []uuid.UUID) []uuid.UUID {
+	if ids == nil {
+		return []uuid.UUID{}
+	}
+	return ids
 }

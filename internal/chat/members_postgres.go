@@ -15,7 +15,11 @@ type queryRower interface {
 }
 
 const memberColumns = `
-		gm.guild_id, u.id, u.display_name, u.avatar_url, gm.nickname, gm.joined_at`
+		gm.guild_id, u.id, u.display_name, u.avatar_url, gm.nickname, gm.joined_at,
+		COALESCE(ARRAY(
+			SELECT mr.role_id FROM guild_member_roles mr
+			WHERE mr.guild_id = gm.guild_id AND mr.user_id = gm.user_id
+			ORDER BY mr.role_id), '{}'::uuid[])`
 
 const inviteColumns = `
 		i.id, i.code, i.uses, i.max_uses, i.expires_at, i.created_at,
@@ -25,7 +29,7 @@ const inviteColumns = `
 func scanMember(row rowScanner, member *Member) error {
 	return row.Scan(
 		&member.GuildID, &member.User.ID, &member.User.DisplayName, &member.User.AvatarURL,
-		&member.Nickname, &member.JoinedAt,
+		&member.Nickname, &member.JoinedAt, &member.RoleIDs,
 	)
 }
 
@@ -102,6 +106,10 @@ func (s *PostgresStore) UpdateMemberNickname(ctx context.Context, guildID, userI
 	if tag.RowsAffected() == 0 {
 		return Member{}, ErrNotFound
 	}
+	return s.getMemberByID(ctx, s.pool, guildID, userID)
+}
+
+func (s *PostgresStore) GetMemberByID(ctx context.Context, guildID, userID uuid.UUID) (Member, error) {
 	return s.getMemberByID(ctx, s.pool, guildID, userID)
 }
 

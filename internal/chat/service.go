@@ -91,12 +91,8 @@ func (s *Service) UpdateGuild(ctx context.Context, userID, guildID uuid.UUID, in
 	if input.Name == nil && !input.Description.Set {
 		return Guild{}, &ValidationError{Field: "body", Message: "must contain at least one field"}
 	}
-	current, err := s.store.GetGuild(ctx, userID, guildID)
-	if err != nil {
+	if _, err := s.require(ctx, userID, guildID, PermManageGuild); err != nil {
 		return Guild{}, err
-	}
-	if current.OwnerID != userID {
-		return Guild{}, ErrForbidden
 	}
 	if input.Name != nil {
 		value, err := validateName("name", *input.Name)
@@ -127,12 +123,8 @@ func (s *Service) DeleteGuild(ctx context.Context, userID, guildID uuid.UUID) er
 }
 
 func (s *Service) CreateChannel(ctx context.Context, userID, guildID uuid.UUID, input CreateChannelInput) (Channel, error) {
-	guild, err := s.store.GetGuild(ctx, userID, guildID)
-	if err != nil {
+	if _, err := s.require(ctx, userID, guildID, PermManageChannels); err != nil {
 		return Channel{}, err
-	}
-	if guild.OwnerID != userID {
-		return Channel{}, ErrForbidden
 	}
 	if input.Type != ChannelTypeText && input.Type != ChannelTypeVoice {
 		return Channel{}, &ValidationError{Field: "type", Message: "must be TEXT or VOICE"}
@@ -208,12 +200,8 @@ func (s *Service) UpdateChannel(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return Channel{}, err
 	}
-	guild, err := s.store.GetGuild(ctx, userID, channel.GuildID)
-	if err != nil {
+	if _, err := s.require(ctx, userID, channel.GuildID, PermManageChannels); err != nil {
 		return Channel{}, err
-	}
-	if guild.OwnerID != userID {
-		return Channel{}, ErrForbidden
 	}
 	if input.Name != nil {
 		value, err := validateName("name", *input.Name)
@@ -243,12 +231,8 @@ func (s *Service) DeleteChannel(ctx context.Context, userID, channelID uuid.UUID
 	if err != nil {
 		return err
 	}
-	guild, err := s.store.GetGuild(ctx, userID, channel.GuildID)
-	if err != nil {
+	if _, err := s.require(ctx, userID, channel.GuildID, PermManageChannels); err != nil {
 		return err
-	}
-	if guild.OwnerID != userID {
-		return ErrForbidden
 	}
 	return s.store.DeleteChannel(ctx, userID, channelID)
 }
@@ -260,6 +244,9 @@ func (s *Service) CreateMessage(ctx context.Context, userID, channelID uuid.UUID
 	}
 	if channel.Type != ChannelTypeText {
 		return Message{}, ErrNotFound
+	}
+	if _, err := s.require(ctx, userID, channel.GuildID, PermSendMessages); err != nil {
+		return Message{}, err
 	}
 	if err := validateContent(content); err != nil {
 		return Message{}, err
@@ -329,7 +316,15 @@ func (s *Service) UpdateMessage(ctx context.Context, userID, channelID, messageI
 }
 
 func (s *Service) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error {
-	return s.store.DeleteMessage(ctx, userID, channelID, messageID)
+	channel, err := s.store.GetChannel(ctx, userID, channelID)
+	if err != nil {
+		return err
+	}
+	access, err := s.store.GetAccess(ctx, channel.GuildID, userID)
+	if err != nil {
+		return err
+	}
+	return s.store.DeleteMessage(ctx, userID, channelID, messageID, access.Has(PermManageMessages))
 }
 
 func (s *Service) AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error) {

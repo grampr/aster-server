@@ -52,41 +52,78 @@ func (s *Service) GetMember(ctx context.Context, requesterID, guildID, userID uu
 	return s.store.GetMember(ctx, requesterID, guildID, userID)
 }
 
-// UpdateMember changes a Member's Guild nickname. The Member themself or the Guild
-// Owner may change it. Role assignment is rejected until Role storage exists.
+// UpdateMember changes a Member's nickname and Roles. A Member may change their own
+// nickname; every other change needs MANAGE_MEMBERS or MANAGE_ROLES and a higher Role
+// than the target.
 func (s *Service) UpdateMember(ctx context.Context, requesterID, guildID, userID uuid.UUID, input UpdateMemberInput) (Member, error) {
 	if !input.Nickname.Set && input.RoleIDs == nil {
 		return Member{}, &ValidationError{Field: "body", Message: "must contain at least one field"}
 	}
-	if input.RoleIDs != nil && len(*input.RoleIDs) > 0 {
-		return Member{}, &ValidationError{Field: "role_ids", Message: "role assignment is not supported yet"}
-	}
-	guild, err := s.store.GetGuild(ctx, requesterID, guildID)
+	access, err := s.store.GetAccess(ctx, guildID, requesterID)
 	if err != nil {
 		return Member{}, err
 	}
-	if requesterID != userID && guild.OwnerID != requesterID {
-		return Member{}, ErrForbidden
-	}
-	if !input.Nickname.Set {
-		return s.store.GetMember(ctx, requesterID, guildID, userID)
-	}
-	nickname, err := normalizeNickname(input.Nickname.Value)
+	member, err := s.store.GetMember(ctx, requesterID, guildID, userID)
 	if err != nil {
 		return Member{}, err
 	}
-	return s.store.UpdateMemberNickname(ctx, guildID, userID, nickname)
+	if input.Nickname.Set && requesterID != userID {
+		if !access.Has(PermManageMembers) {
+			return Member{}, ErrForbidden
+		}
+		if err := s.checkOutranksMember(ctx, access, guildID, userID); err != nil {
+			return Member{}, err
+		}
+	}
+	var nickname *string
+	if input.Nickname.Set {
+		if nickname, err = normalizeNickname(input.Nickname.Value); err != nil {
+			return Member{}, err
+		}
+	}
+	if input.RoleIDs != nil {
+		if !access.Has(PermManageRoles) {
+			return Member{}, ErrForbidden
+		}
+		if requesterID != userID {
+			if err := s.checkOutranksMember(ctx, access, guildID, userID); err != nil {
+				return Member{}, err
+			}
+		}
+		if err := s.assignRoles(ctx, access, member, *input.RoleIDs); err != nil {
+			return Member{}, err
+		}
+	}
+	if input.Nickname.Set {
+		return s.store.UpdateMemberNickname(ctx, guildID, userID, nickname)
+	}
+	return s.store.GetMemberByID(ctx, guildID, userID)
 }
 
-// RemoveMember removes another Member from the Guild. Only the Owner may do so and
-// the Owner can never be removed.
-func (s *Service) RemoveMember(ctx context.Context, requesterID, guildID, userID uuid.UUID) error {
-	guild, err := s.store.GetGuild(ctx, requesterID, guildID)
+// checkOutranksMember rejects actions against the Owner or a Member whose highest
+// Role is not below the caller's.
+func (s *Service) checkOutranksMember(ctx context.Context, access Access, guildID, targetID uuid.UUID) error {
+	target, err := s.store.GetAccess(ctx, guildID, targetID)
 	if err != nil {
 		return err
 	}
-	if guild.OwnerID != requesterID || userID == guild.OwnerID {
+	if target.Owner || !access.Outranks(target.TopPosition) {
 		return ErrForbidden
+	}
+	return nil
+}
+
+// RemoveMember removes another Member from the Guild. The Owner can never be removed.
+func (s *Service) RemoveMember(ctx context.Context, requesterID, guildID, userID uuid.UUID) error {
+	access, err := s.require(ctx, requesterID, guildID, PermManageMembers)
+	if err != nil {
+		return err
+	}
+	if requesterID == userID {
+		return ErrForbidden
+	}
+	if err := s.checkOutranksMember(ctx, access, guildID, userID); err != nil {
+		return err
 	}
 	return s.store.RemoveMember(ctx, guildID, userID)
 }
@@ -107,12 +144,8 @@ func (s *Service) ListGuildMemberIDs(ctx context.Context, guildID uuid.UUID) ([]
 }
 
 func (s *Service) CreateInvite(ctx context.Context, userID, guildID uuid.UUID, input CreateInviteInput) (Invite, error) {
-	guild, err := s.store.GetGuild(ctx, userID, guildID)
-	if err != nil {
+	if _, err := s.require(ctx, userID, guildID, PermCreateInvite); err != nil {
 		return Invite{}, err
-	}
-	if guild.OwnerID != userID {
-		return Invite{}, ErrForbidden
 	}
 	if input.ExpiresIn != nil && (*input.ExpiresIn < minInviteLifetime || *input.ExpiresIn > maxInviteLifetime) {
 		return Invite{}, &ValidationError{Field: "expires_in", Message: fmt.Sprintf("must be between %d and %d seconds", minInviteLifetime, maxInviteLifetime)}
@@ -138,23 +171,15 @@ func (s *Service) CreateInvite(ctx context.Context, userID, guildID uuid.UUID, i
 }
 
 func (s *Service) ListInvites(ctx context.Context, userID, guildID uuid.UUID) ([]Invite, error) {
-	guild, err := s.store.GetGuild(ctx, userID, guildID)
-	if err != nil {
+	if _, err := s.require(ctx, userID, guildID, PermManageGuild); err != nil {
 		return nil, err
-	}
-	if guild.OwnerID != userID {
-		return nil, ErrForbidden
 	}
 	return s.store.ListInvites(ctx, guildID, s.now().UTC())
 }
 
 func (s *Service) RevokeInvite(ctx context.Context, userID, guildID, inviteID uuid.UUID) error {
-	guild, err := s.store.GetGuild(ctx, userID, guildID)
-	if err != nil {
+	if _, err := s.require(ctx, userID, guildID, PermManageGuild); err != nil {
 		return err
-	}
-	if guild.OwnerID != userID {
-		return ErrForbidden
 	}
 	return s.store.RevokeInvite(ctx, guildID, inviteID, s.now().UTC())
 }
