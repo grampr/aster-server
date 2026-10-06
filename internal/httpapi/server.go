@@ -18,6 +18,7 @@ import (
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
 	"github.com/grampr/aster-server/internal/gateway"
+	"github.com/grampr/aster-server/internal/voice"
 )
 
 const maxRequestBodyBytes = 64 << 10
@@ -26,17 +27,30 @@ type Server struct {
 	auth           *auth.Service
 	chat           *chat.Service
 	gateway        *gateway.Service
+	voice          *voice.Service
+	corsOrigins    map[string]struct{}
 	logger         *slog.Logger
 	version        string
 	requestLimiter *fixedWindowLimiter
 	loginLimiter   *fixedWindowLimiter
+	mailLimiter    *fixedWindowLimiter
 }
 
-func New(authService *auth.Service, chatService *chat.Service, gatewayService *gateway.Service, logger *slog.Logger, version string) http.Handler {
+func New(authService *auth.Service, chatService *chat.Service, gatewayService *gateway.Service, logger *slog.Logger, version string, options ...Option) http.Handler {
 	server := &Server{
 		auth: authService, chat: chatService, gateway: gatewayService, logger: logger, version: version,
 		requestLimiter: newFixedWindowLimiter(60, time.Minute),
 		loginLimiter:   newFixedWindowLimiter(5, 15*time.Minute),
+		mailLimiter:    newFixedWindowLimiter(5, time.Hour),
+	}
+	for _, option := range options {
+		option(server)
+	}
+	if server.voice != nil {
+		server.voice.SetNotifier(server.publishVoiceState)
+	}
+	if gatewayService != nil {
+		gatewayService.SetOnUserGone(server.userGone)
 	}
 	mux := http.NewServeMux()
 	if gatewayService != nil {
@@ -45,9 +59,19 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("GET /api/v1/health", server.health)
 	mux.HandleFunc("POST /api/v1/auth/password/register", server.register)
 	mux.HandleFunc("POST /api/v1/auth/password/login", server.login)
+	mux.HandleFunc("POST /api/v1/auth/google/authorize", server.beginGoogleLogin)
+	mux.HandleFunc("GET /api/v1/auth/google/callback", server.completeGoogleLogin)
+	mux.HandleFunc("POST /api/v1/auth/google/exchange", server.exchangeGoogleLogin)
+	mux.HandleFunc("POST /api/v1/auth/google/link", server.linkGoogleIdentity)
+	mux.HandleFunc("POST /api/v1/auth/email/verification", server.requestEmailVerification)
+	mux.HandleFunc("POST /api/v1/auth/email/verify", server.verifyEmail)
+	mux.HandleFunc("POST /api/v1/auth/password/reset-request", server.requestPasswordReset)
+	mux.HandleFunc("POST /api/v1/auth/password/reset", server.resetPassword)
+	mux.HandleFunc("DELETE /api/v1/users/@me/authentication-methods/{method}", server.unlinkAuthenticationMethod)
 	mux.HandleFunc("POST /api/v1/auth/token/refresh", server.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", server.logout)
 	mux.HandleFunc("GET /api/v1/users/@me", server.currentUser)
+	mux.HandleFunc("PUT /api/v1/users/@me/presence", server.updatePresence)
 	mux.HandleFunc("GET /api/v1/guilds", server.listGuilds)
 	mux.HandleFunc("POST /api/v1/guilds", server.createGuild)
 	mux.HandleFunc("GET /api/v1/guilds/{guild_id}", server.getGuild)
@@ -55,8 +79,39 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}", server.deleteGuild)
 	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/channels", server.listChannels)
 	mux.HandleFunc("POST /api/v1/guilds/{guild_id}/channels", server.createChannel)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/members", server.listMembers)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/members/{user_id}", server.getMember)
+	mux.HandleFunc("PATCH /api/v1/guilds/{guild_id}/members/{user_id}", server.updateMember)
+	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/members/{user_id}", server.removeMember)
+	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/members/@me", server.leaveGuild)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/roles", server.listRoles)
+	mux.HandleFunc("POST /api/v1/guilds/{guild_id}/roles", server.createRole)
+	mux.HandleFunc("PATCH /api/v1/guilds/{guild_id}/roles/{role_id}", server.updateRole)
+	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/roles/{role_id}", server.deleteRole)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/invites", server.listInvites)
+	mux.HandleFunc("POST /api/v1/guilds/{guild_id}/invites", server.createInvite)
+	mux.HandleFunc("DELETE /api/v1/guilds/{guild_id}/invites/{invite_id}", server.deleteInvite)
+	mux.HandleFunc("GET /api/v1/invites/{invite_code}", server.getInvite)
+	mux.HandleFunc("POST /api/v1/invites/{invite_code}/accept", server.acceptInvite)
 	mux.HandleFunc("GET /api/v1/channels/{channel_id}", server.getChannel)
 	mux.HandleFunc("PATCH /api/v1/channels/{channel_id}", server.updateChannel)
+	mux.HandleFunc("GET /api/v1/channels/{channel_id}/threads", server.listThreads)
+	mux.HandleFunc("POST /api/v1/channels/{channel_id}/threads", server.createThread)
+	mux.HandleFunc("GET /api/v1/channels/{channel_id}/voice", server.voiceRoute(server.listVoiceStates))
+	mux.HandleFunc("POST /api/v1/channels/{channel_id}/voice", server.voiceRoute(server.joinVoiceChannel))
+	mux.HandleFunc("PATCH /api/v1/voice/sessions/@me", server.voiceRoute(server.updateVoiceState))
+	mux.HandleFunc("DELETE /api/v1/voice/sessions/@me", server.voiceRoute(server.leaveVoiceChannel))
+	mux.HandleFunc("POST /api/v1/channels/{channel_id}/attachments/intents", server.createAttachmentIntent)
+	mux.HandleFunc("GET /api/v1/attachments/{attachment_id}", server.getAttachment)
+	mux.HandleFunc("DELETE /api/v1/attachments/{attachment_id}", server.deleteAttachment)
+	mux.HandleFunc("POST /api/v1/attachments/{attachment_id}/finalize", server.finalizeAttachment)
+	mux.HandleFunc("GET /api/v1/attachments/{attachment_id}/content", server.downloadAttachment)
+	mux.HandleFunc("POST /api/v1/attachments/{attachment_id}/download-intents", server.createAttachmentDownloadIntent)
+	mux.HandleFunc("PUT /api/v1/channels/{channel_id}/read-state", server.updateReadState)
+	mux.HandleFunc("GET /api/v1/users/@me/read-states", server.listReadStates)
+	mux.HandleFunc("GET /api/v1/guilds/{guild_id}/messages/search", server.searchMessages)
+	mux.HandleFunc("GET /api/v1/users/@me/channels", server.listDirectChannels)
+	mux.HandleFunc("POST /api/v1/users/@me/channels", server.openDirectChannel)
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}", server.deleteChannel)
 	mux.HandleFunc("GET /api/v1/channels/{channel_id}/messages", server.listMessages)
 	mux.HandleFunc("POST /api/v1/channels/{channel_id}/messages", server.createMessage)
@@ -66,7 +121,7 @@ func New(authService *auth.Service, chatService *chat.Service, gatewayService *g
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}", server.deleteMessage)
 	mux.HandleFunc("PUT /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}", server.addMessageReaction)
 	mux.HandleFunc("DELETE /api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}", server.removeMessageReaction)
-	return server.requestID(server.recoverPanic(mux))
+	return server.cors(server.requestID(server.recoverPanic(mux)))
 }
 
 func (s *Server) health(writer http.ResponseWriter, request *http.Request) {
@@ -174,20 +229,28 @@ func (s *Server) currentUser(writer http.ResponseWriter, request *http.Request) 
 		s.handleAuthError(writer, request, err)
 		return
 	}
+	response, err := userSelfResponse(user)
+	if err != nil {
+		s.writeError(writer, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func userSelfResponse(user auth.User) (protocolgo.UserSelf, error) {
 	methods := make([]protocolgo.AuthenticationMethod, 0, len(user.AuthenticationMethods))
 	for _, method := range user.AuthenticationMethods {
 		value := protocolgo.AuthenticationMethod(method)
 		if !value.Valid() {
-			s.writeError(writer, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", fmt.Errorf("unsupported authentication method %q", method))
-			return
+			return protocolgo.UserSelf{}, fmt.Errorf("unsupported authentication method %q", method)
 		}
 		methods = append(methods, value)
 	}
-	writeJSON(writer, http.StatusOK, protocolgo.UserSelf{
+	return protocolgo.UserSelf{
 		Id: user.ID, Email: protocolgo.Email(user.Email), EmailVerified: user.EmailVerified,
 		DisplayName: user.DisplayName, AvatarUrl: user.AvatarURL,
 		AuthenticationMethods: methods, CreatedAt: user.CreatedAt,
-	})
+	}, nil
 }
 
 func (s *Server) allowRequest(writer http.ResponseWriter, request *http.Request, bucket string) bool {
@@ -211,6 +274,20 @@ func (s *Server) handleAuthError(writer http.ResponseWriter, request *http.Reque
 		s.writeError(writer, request, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Email or password is incorrect", nil)
 	case errors.Is(err, auth.ErrInvalidRefreshToken):
 		s.writeError(writer, request, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "Refresh token is invalid or expired", nil)
+	case errors.Is(err, auth.ErrInvalidAuthorizationGrant):
+		s.writeError(writer, request, http.StatusBadRequest, "INVALID_AUTHORIZATION_GRANT", "Authorization grant is invalid or expired", nil)
+	case errors.Is(err, auth.ErrAccountLinkRequired):
+		s.writeError(writer, request, http.StatusConflict, "ACCOUNT_LINK_REQUIRED", "Sign in to the existing account before linking Google", nil)
+	case errors.Is(err, auth.ErrMailUnavailable):
+		s.writeError(writer, request, http.StatusServiceUnavailable, "MAIL_UNAVAILABLE", "Email delivery is not available", nil)
+	case errors.Is(err, auth.ErrIdentityAlreadyLinked):
+		s.writeError(writer, request, http.StatusConflict, "IDENTITY_ALREADY_LINKED", "This Google identity is already linked to an account", nil)
+	case errors.Is(err, auth.ErrLastAuthenticationMethod):
+		s.writeError(writer, request, http.StatusConflict, "LAST_AUTHENTICATION_METHOD", "The last authentication method cannot be unlinked", nil)
+	case errors.Is(err, auth.ErrAuthMethodNotLinked):
+		s.writeError(writer, request, http.StatusNotFound, "NOT_FOUND", "Resource not found", nil)
+	case errors.Is(err, auth.ErrGoogleUnavailable):
+		s.writeError(writer, request, http.StatusServiceUnavailable, "GOOGLE_UNAVAILABLE", "Google login is not available", nil)
 	case errors.Is(err, auth.ErrUnauthorized):
 		s.writeError(writer, request, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication is required", nil)
 	default:
@@ -223,7 +300,7 @@ func (s *Server) writeError(writer http.ResponseWriter, request *http.Request, s
 	if cause != nil {
 		s.logger.Error("request failed", "request_id", requestID, "method", request.Method, "path", request.URL.Path, "error", cause)
 	}
-	if status == http.StatusUnauthorized || status == http.StatusConflict || status == http.StatusTooManyRequests {
+	if status == http.StatusUnauthorized || (status == http.StatusConflict && (code == "EMAIL_ALREADY_REGISTERED" || code == "ACCOUNT_LINK_REQUIRED" || code == "IDENTITY_ALREADY_LINKED")) || status == http.StatusTooManyRequests {
 		s.audit(request, "authentication", "rejected", "code", code)
 	}
 	if status == http.StatusUnauthorized {

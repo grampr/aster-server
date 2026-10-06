@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	asterMail "github.com/grampr/aster-server/internal/mail"
 )
 
 type ValidationError struct {
@@ -43,6 +46,10 @@ type LoginInput struct {
 type Service struct {
 	store      Store
 	hasher     *PasswordHasher
+	google     *GoogleClient
+	mailer     asterMail.Mailer
+	logger     *slog.Logger
+	mailWait   sync.WaitGroup
 	tokens     TokenIssuer
 	accessTTL  time.Duration
 	refreshTTL time.Duration
@@ -225,8 +232,10 @@ func (s *Service) issueSession(userID uuid.UUID, now time.Time) (NewSession, Ses
 	}, nil
 }
 
+func normalizeEmail(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+
 func validateEmail(value string) (string, error) {
-	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized := normalizeEmail(value)
 	if normalized == "" || len(normalized) > 320 {
 		return "", &ValidationError{Field: "email", Message: "must be a valid email address"}
 	}

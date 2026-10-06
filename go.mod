@@ -7,7 +7,7 @@ toolchain go1.26.6
 require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20260823133641-c4b9cc8ae10b
+	github.com/grampr/Aster-protocol/packages/protocol-go v0.0.0-20261005125645-f6a37660ac24
 	github.com/jackc/pgx/v5 v5.10.0
 	golang.org/x/crypto v0.55.0
 )

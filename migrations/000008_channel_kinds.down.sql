@@ -1,0 +1,16 @@
+DROP VIEW channel_participants;
+DROP TABLE dm_participants;
+DELETE FROM channels WHERE type IN ('CATEGORY', 'THREAD', 'DIRECT');
+DROP INDEX channels_thread_page_idx;
+DROP INDEX channels_starter_message_idx;
+ALTER TABLE channels DROP CONSTRAINT channels_category_check;
+ALTER TABLE channels DROP CONSTRAINT channels_topic_type_check;
+ALTER TABLE channels DROP CONSTRAINT channels_shape_check;
+ALTER TABLE channels DROP CONSTRAINT channels_type_check;
+ALTER TABLE channels DROP COLUMN dm_key;
+ALTER TABLE channels DROP COLUMN starter_message_id;
+ALTER TABLE channels DROP COLUMN parent_id;
+ALTER TABLE channels ALTER COLUMN name SET NOT NULL;
+ALTER TABLE channels ALTER COLUMN guild_id SET NOT NULL;
+ALTER TABLE channels ADD CONSTRAINT channels_type_check CHECK (type IN ('TEXT', 'VOICE'));
+ALTER TABLE channels ADD CONSTRAINT channels_check CHECK (type = 'TEXT' OR topic IS NULL);

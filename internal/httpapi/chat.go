@@ -15,6 +15,7 @@ import (
 	"github.com/grampr/aster-server/internal/auth"
 	"github.com/grampr/aster-server/internal/chat"
 	"github.com/grampr/aster-server/internal/gateway"
+	"github.com/grampr/aster-server/internal/voice"
 )
 
 func (s *Server) createGuild(writer http.ResponseWriter, request *http.Request) {
@@ -130,12 +131,13 @@ func (s *Server) createChannel(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	channel, err := s.chat.CreateChannel(request.Context(), user.ID, guildID, chat.CreateChannelInput{
-		Type: string(body.Type), Name: body.Name, Topic: body.Topic,
+		Type: string(body.Type), Name: body.Name, Topic: body.Topic, ParentID: body.ParentId,
 	})
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishChannel(request, "create", channel)
 	writeJSON(writer, http.StatusCreated, channelResponse(channel))
 }
 
@@ -198,12 +200,14 @@ func (s *Server) updateChannel(writer http.ResponseWriter, request *http.Request
 	}
 	channel, err := s.chat.UpdateChannel(request.Context(), user.ID, channelID, chat.UpdateChannelInput{
 		Name: body.Name, Position: body.Position,
-		Topic: chat.OptionalString{Set: body.Topic.Set, Value: body.Topic.Value},
+		Topic:    chat.OptionalString{Set: body.Topic.Set, Value: body.Topic.Value},
+		ParentID: chat.OptionalUUID{Set: body.ParentID.Set, Value: body.ParentID.Value},
 	})
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishChannel(request, "update", channel)
 	writeJSON(writer, http.StatusOK, channelResponse(channel))
 }
 
@@ -216,10 +220,16 @@ func (s *Server) deleteChannel(writer http.ResponseWriter, request *http.Request
 	if !ok {
 		return
 	}
+	channel, err := s.chat.GetChannel(request.Context(), user.ID, channelID)
+	if err != nil {
+		s.handleChatError(writer, request, err)
+		return
+	}
 	if err := s.chat.DeleteChannel(request.Context(), user.ID, channelID); err != nil {
 		s.handleChatError(writer, request, err)
 		return
 	}
+	s.publishChannelDelete(request, channel)
 	writer.WriteHeader(http.StatusNoContent)
 }
 
@@ -237,7 +247,15 @@ func (s *Server) createMessage(writer http.ResponseWriter, request *http.Request
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", "Request body is invalid", err)
 		return
 	}
-	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, body.Content, body.ReplyToMessageId)
+	var attachmentIDs []uuid.UUID
+	if body.AttachmentIds != nil {
+		attachmentIDs = *body.AttachmentIds
+	}
+	content := ""
+	if body.Content != nil {
+		content = *body.Content
+	}
+	message, err := s.chat.CreateMessage(request.Context(), user.ID, channelID, content, body.ReplyToMessageId, attachmentIDs)
 	if err != nil {
 		s.handleChatError(writer, request, err)
 		return
@@ -376,13 +394,14 @@ func (s *Server) publishMessage(request *http.Request, event string, message cha
 	}
 	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
 	defer cancel()
-	recipients, err := s.chat.ListChannelMemberIDs(publishContext, message.ChannelID)
+	audience, err := s.chat.ChannelAudience(publishContext, message.ChannelID)
 	if err != nil {
 		s.logger.Error("list gateway message recipients", "request_id", requestIDFromContext(request), "channel_id", message.ChannelID, "error", err)
 		return
 	}
+	recipients := audience.UserIDs
 	payload := gateway.Message{
-		ID: message.ID, ChannelID: message.ChannelID, Content: message.Content, ReplyToMessageID: message.ReplyToMessageID,
+		Direct: audience.Direct, Attachments: gatewayAttachments(message.Attachments), ID: message.ID, ChannelID: message.ChannelID, Content: message.Content, ReplyToMessageID: message.ReplyToMessageID,
 		Author:    gateway.UserSummary{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
 		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 	}
@@ -408,12 +427,12 @@ func (s *Server) publishMessageDelete(request *http.Request, messageID, channelI
 	}
 	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
 	defer cancel()
-	recipients, err := s.chat.ListChannelMemberIDs(publishContext, channelID)
+	audience, err := s.chat.ChannelAudience(publishContext, channelID)
 	if err != nil {
 		s.logger.Error("list gateway message recipients", "request_id", requestIDFromContext(request), "channel_id", channelID, "error", err)
 		return
 	}
-	s.gateway.PublishMessageDelete(recipients, messageID, channelID)
+	s.gateway.PublishMessageDelete(audience.UserIDs, messageID, channelID, audience.Direct)
 }
 
 func (s *Server) publishMessageReaction(request *http.Request, add bool, messageID, channelID, userID uuid.UUID, reaction chat.MessageReaction) {
@@ -422,12 +441,12 @@ func (s *Server) publishMessageReaction(request *http.Request, add bool, message
 	}
 	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
 	defer cancel()
-	recipients, err := s.chat.ListChannelMemberIDs(publishContext, channelID)
+	audience, err := s.chat.ChannelAudience(publishContext, channelID)
 	if err != nil {
 		s.logger.Error("list gateway reaction recipients", "request_id", requestIDFromContext(request), "channel_id", channelID, "error", err)
 		return
 	}
-	s.gateway.PublishMessageReaction(recipients, add, gateway.MessageReaction{
+	s.gateway.PublishMessageReaction(audience.UserIDs, add, gateway.MessageReaction{
 		MessageID: messageID, ChannelID: channelID, UserID: userID, Emoji: reaction.Emoji, Count: reaction.Count,
 	})
 }
@@ -438,12 +457,12 @@ func (s *Server) publishTypingStart(request *http.Request, channelID uuid.UUID, 
 	}
 	publishContext, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), 2*time.Second)
 	defer cancel()
-	recipients, err := s.chat.ListChannelMemberIDs(publishContext, channelID)
+	audience, err := s.chat.ChannelAudience(publishContext, channelID)
 	if err != nil {
 		s.logger.Error("list gateway typing recipients", "request_id", requestIDFromContext(request), "channel_id", channelID, "error", err)
 		return
 	}
-	s.gateway.PublishTypingStart(recipients, gateway.TypingStart{
+	s.gateway.PublishTypingStart(audience.UserIDs, gateway.TypingStart{
 		ChannelID: channelID,
 		User: gateway.UserSummary{
 			ID: user.ID, DisplayName: user.DisplayName, AvatarURL: user.AvatarURL,
@@ -501,6 +520,20 @@ func (s *Server) handleChatError(writer http.ResponseWriter, request *http.Reque
 		s.writeError(writer, request, http.StatusBadRequest, "INVALID_REQUEST", validationError.Error(), nil)
 	case errors.Is(err, chat.ErrForbidden):
 		s.writeError(writer, request, http.StatusForbidden, "FORBIDDEN", "You do not have permission to perform this operation", nil)
+	case errors.Is(err, voice.ErrUnavailable):
+		s.writeError(writer, request, http.StatusServiceUnavailable, "VOICE_UNAVAILABLE", "Voice is not available", nil)
+	case errors.Is(err, chat.ErrStorageUnavailable):
+		s.writeError(writer, request, http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", "Attachments are not available", nil)
+	case errors.Is(err, chat.ErrUploadQuota):
+		s.writeError(writer, request, http.StatusTooManyRequests, "UPLOAD_QUOTA_EXCEEDED", "Too many unused attachments; send or delete some first", nil)
+	case errors.Is(err, chat.ErrAttachmentInUse):
+		s.writeError(writer, request, http.StatusConflict, "ATTACHMENT_IN_USE", "Attachment is attached to a message", nil)
+	case errors.Is(err, chat.ErrAttachmentMismatch):
+		s.writeError(writer, request, http.StatusConflict, "ATTACHMENT_MISMATCH", "Uploaded object is missing or does not match the declaration", nil)
+	case errors.Is(err, chat.ErrThreadExists):
+		s.writeError(writer, request, http.StatusConflict, "THREAD_ALREADY_EXISTS", "A thread already exists for this message", nil)
+	case errors.Is(err, chat.ErrInviteUnavailable):
+		s.writeError(writer, request, http.StatusConflict, "INVITE_UNAVAILABLE", "Invite is expired or has no remaining uses", nil)
 	case errors.Is(err, chat.ErrNotFound):
 		s.writeError(writer, request, http.StatusNotFound, "NOT_FOUND", "Resource not found", nil)
 	default:
@@ -544,6 +577,25 @@ func (value *optionalNullableString) UnmarshalJSON(payload []byte) error {
 	return nil
 }
 
+type optionalNullableUUID struct {
+	Set   bool
+	Value *uuid.UUID
+}
+
+func (value *optionalNullableUUID) UnmarshalJSON(payload []byte) error {
+	value.Set = true
+	if bytes.Equal(payload, []byte("null")) {
+		value.Value = nil
+		return nil
+	}
+	var decoded uuid.UUID
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return fmt.Errorf("must be a UUID or null: %w", err)
+	}
+	value.Value = &decoded
+	return nil
+}
+
 type guildPatchBody struct {
 	Name        *string                `json:"name,omitempty"`
 	Description optionalNullableString `json:"description,omitempty"`
@@ -553,6 +605,7 @@ type channelPatchBody struct {
 	Name     *string                `json:"name,omitempty"`
 	Topic    optionalNullableString `json:"topic,omitempty"`
 	Position *int                   `json:"position,omitempty"`
+	ParentID optionalNullableUUID   `json:"parent_id,omitempty"`
 }
 
 func guildResponse(guild chat.Guild) protocolgo.Guild {
@@ -563,9 +616,14 @@ func guildResponse(guild chat.Guild) protocolgo.Guild {
 }
 
 func channelResponse(channel chat.Channel) protocolgo.Channel {
+	recipients := make([]protocolgo.UserSummary, len(channel.Recipients))
+	for index, recipient := range channel.Recipients {
+		recipients[index] = protocolgo.UserSummary{Id: recipient.ID, DisplayName: recipient.DisplayName, AvatarUrl: recipient.AvatarURL}
+	}
 	return protocolgo.Channel{
-		Id: channel.ID, GuildId: channel.GuildID, Type: protocolgo.ChannelType(channel.Type),
-		Name: channel.Name, Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt,
+		Id: channel.ID, GuildId: channel.GuildID, ParentId: channel.ParentID, Type: protocolgo.ChannelType(channel.Type),
+		Name: channel.Name, Topic: channel.Topic, Position: channel.Position, Recipients: recipients,
+		CreatedAt: channel.CreatedAt,
 	}
 }
 
@@ -575,7 +633,7 @@ func messageResponse(message chat.Message) protocolgo.Message {
 		reactions[index] = messageReactionResponse(reaction)
 	}
 	response := protocolgo.Message{
-		Id: message.ID, ChannelId: message.ChannelID, Content: message.Content,
+		Id: message.ID, ChannelId: message.ChannelID, Content: message.Content, Attachments: attachmentsResponse(message.Attachments),
 		ReplyToMessageId: message.ReplyToMessageID, Reactions: reactions, CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 		Author: protocolgo.UserSummary{
 			Id: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarUrl: message.Author.AvatarURL,
@@ -591,6 +649,14 @@ func messageResponse(message chat.Message) protocolgo.Message {
 		}
 	}
 	return response
+}
+
+func attachmentsResponse(attachments []chat.Attachment) []protocolgo.Attachment {
+	items := make([]protocolgo.Attachment, len(attachments))
+	for index := range attachments {
+		items[index] = attachmentResponse(attachments[index])
+	}
+	return items
 }
 
 func messageReactionResponse(reaction chat.MessageReaction) protocolgo.MessageReaction {

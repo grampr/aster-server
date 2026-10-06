@@ -36,6 +36,17 @@ func (s *PostgresStore) CreateGuild(ctx context.Context, ownerID uuid.UUID, guil
 	); err != nil {
 		return fmt.Errorf("insert guild owner membership: %w", err)
 	}
+	roleID, err := newUUIDv7()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO guild_roles (id, guild_id, name, color, permissions, position, managed, is_default, created_at)
+		VALUES ($1, $2, '@everyone', NULL, $3, 0, TRUE, TRUE, $4)`,
+		roleID, guild.ID, int32(DefaultRolePermissions), guild.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("insert default role: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit guild creation: %w", err)
 	}
@@ -98,7 +109,7 @@ func (s *PostgresStore) UpdateGuild(ctx context.Context, ownerID, guildID uuid.U
 		SET name = COALESCE($3, name),
 		    description = CASE WHEN $4 THEN $5 ELSE description END,
 		    updated_at = $6
-		WHERE id = $1 AND owner_id = $2
+		WHERE id = $1 AND EXISTS (SELECT 1 FROM guild_members gm WHERE gm.guild_id = guilds.id AND gm.user_id = $2)
 		RETURNING id, owner_id, name, description, icon_url, created_at`,
 		guildID, ownerID, input.Name, input.Description.Set, input.Description.Value, updatedAt,
 	).Scan(&guild.ID, &guild.OwnerID, &guild.Name, &guild.Description, &guild.IconURL, &guild.CreatedAt)
@@ -122,137 +133,25 @@ func (s *PostgresStore) DeleteGuild(ctx context.Context, ownerID, guildID uuid.U
 	return nil
 }
 
-func (s *PostgresStore) CreateChannel(ctx context.Context, channel Channel) (Channel, error) {
+func (s *PostgresStore) CreateMessage(ctx context.Context, message Message) (Message, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Channel{}, fmt.Errorf("begin channel creation: %w", err)
+		return Message{}, fmt.Errorf("begin message creation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := tx.QueryRow(ctx, `SELECT id FROM guilds WHERE id = $1 FOR UPDATE`, channel.GuildID).Scan(new(uuid.UUID)); errors.Is(err, pgx.ErrNoRows) {
-		return Channel{}, ErrNotFound
-	} else if err != nil {
-		return Channel{}, fmt.Errorf("lock guild for channel creation: %w", err)
-	}
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(position), -1) + 1 FROM channels WHERE guild_id = $1`, channel.GuildID).Scan(&channel.Position); err != nil {
-		return Channel{}, fmt.Errorf("select channel position: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO channels (id, guild_id, type, name, topic, position, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
-		channel.ID, channel.GuildID, channel.Type, channel.Name, channel.Topic, channel.Position, channel.CreatedAt,
-	); err != nil {
-		return Channel{}, fmt.Errorf("insert channel: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Channel{}, fmt.Errorf("commit channel creation: %w", err)
-	}
-	return channel, nil
-}
-
-func (s *PostgresStore) ListChannels(ctx context.Context, userID, guildID uuid.UUID, cursor *pageCursor, limit int) ([]Channel, error) {
-	var cursorPosition *int
-	cursorID := uuid.Nil
-	if cursor != nil {
-		cursorPosition, cursorID = &cursor.Position, cursor.ID
-	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT c.id, c.guild_id, c.type, c.name, c.topic, c.position, c.created_at
-		FROM channels c
-		JOIN guild_members gm ON gm.guild_id = c.guild_id
-		WHERE c.guild_id = $1 AND gm.user_id = $2
-		  AND ($3::integer IS NULL OR (c.position, c.id) > ($3, $4))
-		ORDER BY c.position, c.id
-		LIMIT $5`, guildID, userID, cursorPosition, cursorID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list channels: %w", err)
-	}
-	defer rows.Close()
-	items := make([]Channel, 0, limit)
-	for rows.Next() {
-		var item Channel
-		if err := scanChannel(rows, &item); err != nil {
-			return nil, fmt.Errorf("scan channel: %w", err)
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate channels: %w", err)
-	}
-	if len(items) == 0 {
-		var exists bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM guild_members WHERE guild_id = $1 AND user_id = $2)`, guildID, userID).Scan(&exists); err != nil {
-			return nil, fmt.Errorf("check guild membership: %w", err)
-		}
-		if !exists {
-			return nil, ErrNotFound
-		}
-	}
-	return items, nil
-}
-
-func (s *PostgresStore) GetChannel(ctx context.Context, userID, channelID uuid.UUID) (Channel, error) {
-	var channel Channel
-	err := s.pool.QueryRow(ctx, `
-		SELECT c.id, c.guild_id, c.type, c.name, c.topic, c.position, c.created_at
-		FROM channels c
-		JOIN guild_members gm ON gm.guild_id = c.guild_id
-		WHERE c.id = $1 AND gm.user_id = $2`, channelID, userID,
-	).Scan(&channel.ID, &channel.GuildID, &channel.Type, &channel.Name, &channel.Topic, &channel.Position, &channel.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Channel{}, ErrNotFound
-	}
-	if err != nil {
-		return Channel{}, fmt.Errorf("get channel: %w", err)
-	}
-	return channel, nil
-}
-
-func (s *PostgresStore) UpdateChannel(ctx context.Context, ownerID, channelID uuid.UUID, input UpdateChannelInput, updatedAt time.Time) (Channel, error) {
-	var channel Channel
-	err := s.pool.QueryRow(ctx, `
-		UPDATE channels c
-		SET name = COALESCE($3, c.name),
-		    topic = CASE WHEN $4 THEN $5 ELSE c.topic END,
-		    position = COALESCE($6, c.position),
-		    updated_at = $7
-		FROM guilds g
-		WHERE c.id = $1 AND g.id = c.guild_id AND g.owner_id = $2
-		RETURNING c.id, c.guild_id, c.type, c.name, c.topic, c.position, c.created_at`,
-		channelID, ownerID, input.Name, input.Topic.Set, input.Topic.Value, input.Position, updatedAt,
-	).Scan(&channel.ID, &channel.GuildID, &channel.Type, &channel.Name, &channel.Topic, &channel.Position, &channel.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Channel{}, ErrNotFound
-	}
-	if err != nil {
-		return Channel{}, fmt.Errorf("update channel: %w", err)
-	}
-	return channel, nil
-}
-
-func (s *PostgresStore) DeleteChannel(ctx context.Context, ownerID, channelID uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `
-		DELETE FROM channels c USING guilds g
-		WHERE c.id = $1 AND g.id = c.guild_id AND g.owner_id = $2`, channelID, ownerID)
-	if err != nil {
-		return fmt.Errorf("delete channel: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func (s *PostgresStore) CreateMessage(ctx context.Context, message Message) (Message, error) {
-	err := scanMessage(s.pool.QueryRow(ctx, `
+	attachmentIDs := message.AttachmentIDs
+	err = scanMessage(tx.QueryRow(ctx, `
 		WITH inserted AS (
 			INSERT INTO messages (id, channel_id, author_id, content, reply_to_message_id, created_at)
 			SELECT $1, c.id, $3, $4, $5, $6
 			FROM channels c
-			JOIN guild_members gm ON gm.guild_id = c.guild_id
+			JOIN channel_participants cp ON cp.channel_id = c.id
 			LEFT JOIN messages reply ON reply.id = $5 AND reply.channel_id = c.id
-			WHERE c.id = $2 AND c.type = 'TEXT' AND gm.user_id = $3
+			WHERE c.id = $2 AND c.type IN ('TEXT', 'THREAD', 'DIRECT') AND cp.user_id = $3
 			  AND ($5::uuid IS NULL OR reply.id IS NOT NULL)
 			RETURNING id, channel_id, author_id, content, reply_to_message_id, created_at, edited_at
+		), bumped AS (
+			UPDATE channels SET updated_at = $6 WHERE id = (SELECT channel_id FROM inserted)
 		)
 		SELECT i.id, i.channel_id, u.id, u.display_name, u.avatar_url, i.content,
 		       i.reply_to_message_id, i.created_at, i.edited_at,
@@ -269,6 +168,21 @@ func (s *PostgresStore) CreateMessage(ctx context.Context, message Message) (Mes
 	}
 	if err != nil {
 		return Message{}, fmt.Errorf("create message: %w", err)
+	}
+	if len(attachmentIDs) > 0 {
+		tag, err := tx.Exec(ctx, `
+			UPDATE attachments SET message_id = $1
+			WHERE id = ANY($2) AND channel_id = $3 AND uploader_id = $4 AND status = 'READY' AND message_id IS NULL`,
+			message.ID, attachmentIDs, message.ChannelID, message.Author.ID)
+		if err != nil {
+			return Message{}, fmt.Errorf("attach attachments: %w", err)
+		}
+		if int(tag.RowsAffected()) != len(attachmentIDs) {
+			return Message{}, &ValidationError{Field: "attachment_ids", Message: "must reference your finalized, unused attachments for this channel"}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Message{}, fmt.Errorf("commit message creation: %w", err)
 	}
 	if err := s.populateMessageReactions(ctx, message.Author.ID, &message); err != nil {
 		return Message{}, err
@@ -288,8 +202,8 @@ func (s *PostgresStore) ListMessages(ctx context.Context, userID, channelID uuid
 		       reply.id, reply.channel_id, reply_author.id, reply_author.display_name,
 		       reply_author.avatar_url, reply.content, reply.created_at, reply.edited_at
 		FROM messages m
-		JOIN channels c ON c.id = m.channel_id AND c.type = 'TEXT'
-		JOIN guild_members gm ON gm.guild_id = c.guild_id AND gm.user_id = $2
+		JOIN channels c ON c.id = m.channel_id AND c.type IN ('TEXT', 'THREAD', 'DIRECT')
+		JOIN channel_participants cp ON cp.channel_id = c.id AND cp.user_id = $2
 		JOIN users u ON u.id = m.author_id
 		LEFT JOIN messages reply ON reply.id = m.reply_to_message_id AND reply.channel_id = m.channel_id
 		LEFT JOIN users reply_author ON reply_author.id = reply.author_id
@@ -317,8 +231,8 @@ func (s *PostgresStore) ListMessages(ctx context.Context, userID, channelID uuid
 		if err := s.pool.QueryRow(ctx, `
 			SELECT EXISTS(
 				SELECT 1 FROM channels c
-				JOIN guild_members gm ON gm.guild_id = c.guild_id
-				WHERE c.id = $1 AND c.type = 'TEXT' AND gm.user_id = $2
+				JOIN channel_participants cp ON cp.channel_id = c.id
+				WHERE c.id = $1 AND c.type IN ('TEXT', 'THREAD', 'DIRECT') AND cp.user_id = $2
 			)`, channelID, userID).Scan(&exists); err != nil {
 			return nil, fmt.Errorf("check text channel access: %w", err)
 		}
@@ -344,12 +258,12 @@ func (s *PostgresStore) GetMessage(ctx context.Context, userID, channelID, messa
 		       reply.id, reply.channel_id, reply_author.id, reply_author.display_name,
 		       reply_author.avatar_url, reply.content, reply.created_at, reply.edited_at
 		FROM messages m
-		JOIN channels c ON c.id = m.channel_id AND c.type = 'TEXT'
-		JOIN guild_members gm ON gm.guild_id = c.guild_id
+		JOIN channels c ON c.id = m.channel_id AND c.type IN ('TEXT', 'THREAD', 'DIRECT')
+		JOIN channel_participants cp ON cp.channel_id = c.id
 		JOIN users u ON u.id = m.author_id
 		LEFT JOIN messages reply ON reply.id = m.reply_to_message_id AND reply.channel_id = m.channel_id
 		LEFT JOIN users reply_author ON reply_author.id = reply.author_id
-		WHERE m.id = $1 AND m.channel_id = $2 AND gm.user_id = $3`, messageID, channelID, userID,
+		WHERE m.id = $1 AND m.channel_id = $2 AND cp.user_id = $3`, messageID, channelID, userID,
 	), &message)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, ErrNotFound
@@ -394,14 +308,13 @@ func (s *PostgresStore) UpdateMessage(ctx context.Context, authorID, channelID, 
 	return message, nil
 }
 
-func (s *PostgresStore) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error {
+func (s *PostgresStore) DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID, canManage bool) error {
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM messages m
-		USING channels c, guilds g, guild_members gm
+		USING channel_participants cp
 		WHERE m.id = $1 AND m.channel_id = $2
-		  AND c.id = m.channel_id AND g.id = c.guild_id
-		  AND gm.guild_id = g.id AND gm.user_id = $3
-		  AND (m.author_id = $3 OR g.owner_id = $3)`, messageID, channelID, userID)
+		  AND cp.channel_id = m.channel_id AND cp.user_id = $3
+		  AND (m.author_id = $3 OR $4)`, messageID, channelID, userID, canManage)
 	if err != nil {
 		return fmt.Errorf("delete message: %w", err)
 	}
@@ -453,8 +366,8 @@ func (s *PostgresStore) changeMessageReaction(
 		SELECT EXISTS(
 			SELECT 1
 			FROM messages m
-			JOIN channels c ON c.id = m.channel_id AND c.type = 'TEXT'
-			JOIN guild_members gm ON gm.guild_id = c.guild_id AND gm.user_id = $3
+			JOIN channels c ON c.id = m.channel_id AND c.type IN ('TEXT', 'THREAD', 'DIRECT')
+			JOIN channel_participants cp ON cp.channel_id = c.id AND cp.user_id = $3
 			WHERE m.id = $1 AND m.channel_id = $2
 		)`, messageID, channelID, userID).Scan(&exists); err != nil {
 		return MessageReaction{}, false, fmt.Errorf("check message reaction target: %w", err)
@@ -477,9 +390,13 @@ func (s *PostgresStore) changeMessageReaction(
 	return MessageReaction{Emoji: emoji, Count: count, Me: me}, changed, nil
 }
 
+// populateMessageReactions fills in the Reactions and Attachments of Messages.
 func (s *PostgresStore) populateMessageReactions(ctx context.Context, userID uuid.UUID, messages ...*Message) error {
 	if len(messages) == 0 {
 		return nil
+	}
+	if err := s.populateMessageAttachments(ctx, messages...); err != nil {
+		return err
 	}
 	messageByID := make(map[uuid.UUID]*Message, len(messages))
 	messageIDs := make([]uuid.UUID, 0, len(messages))
@@ -514,37 +431,35 @@ func (s *PostgresStore) populateMessageReactions(ctx context.Context, userID uui
 	return nil
 }
 
-func (s *PostgresStore) ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+// ChannelAudience returns every User who can read a text-like Channel, and whether
+// the Channel is a Direct Message, which Gateway Sessions subscribe to separately.
+func (s *PostgresStore) ChannelAudience(ctx context.Context, channelID uuid.UUID) (Audience, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT gm.user_id
+		SELECT cp.user_id, c.type = 'DIRECT'
 		FROM channels c
-		JOIN guild_members gm ON gm.guild_id = c.guild_id
-		WHERE c.id = $1 AND c.type = 'TEXT'
-		ORDER BY gm.user_id`, channelID)
+		JOIN channel_participants cp ON cp.channel_id = c.id
+		WHERE c.id = $1 AND c.type IN ('TEXT', 'THREAD', 'DIRECT')
+		ORDER BY cp.user_id`, channelID)
 	if err != nil {
-		return nil, fmt.Errorf("list channel member IDs: %w", err)
+		return Audience{}, fmt.Errorf("list channel audience: %w", err)
 	}
 	defer rows.Close()
-	memberIDs := make([]uuid.UUID, 0)
+	audience := Audience{UserIDs: make([]uuid.UUID, 0)}
 	for rows.Next() {
 		var memberID uuid.UUID
-		if err := rows.Scan(&memberID); err != nil {
-			return nil, fmt.Errorf("scan channel member ID: %w", err)
+		if err := rows.Scan(&memberID, &audience.Direct); err != nil {
+			return Audience{}, fmt.Errorf("scan channel audience: %w", err)
 		}
-		memberIDs = append(memberIDs, memberID)
+		audience.UserIDs = append(audience.UserIDs, memberID)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate channel member IDs: %w", err)
+		return Audience{}, fmt.Errorf("iterate channel audience: %w", err)
 	}
-	return memberIDs, nil
+	return audience, nil
 }
 
 type rowScanner interface {
 	Scan(...any) error
-}
-
-func scanChannel(row rowScanner, channel *Channel) error {
-	return row.Scan(&channel.ID, &channel.GuildID, &channel.Type, &channel.Name, &channel.Topic, &channel.Position, &channel.CreatedAt)
 }
 
 func scanMessage(row rowScanner, message *Message) error {

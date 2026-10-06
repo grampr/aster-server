@@ -101,13 +101,13 @@ func TestChatLifecycle(t *testing.T) {
 	}
 
 	textChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
-		Type: protocolgo.TEXT, Name: "イベント企画", Topic: stringPointer("日程を相談します"),
+		Type: protocolgo.CreateChannelRequestTypeTEXT, Name: "イベント企画", Topic: stringPointer("日程を相談します"),
 	}, aliceSession.AccessToken, http.StatusCreated)
 	voiceChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
-		Type: protocolgo.VOICE, Name: "イベント会議",
+		Type: protocolgo.CreateChannelRequestTypeVOICE, Name: "イベント会議",
 	}, aliceSession.AccessToken, http.StatusCreated)
 	otherTextChannel := requestJSON[protocolgo.Channel](t, server.Client(), http.MethodPost, server.URL+"/api/v1/guilds/"+guild.Id.String()+"/channels", protocolgo.CreateChannelRequest{
-		Type: protocolgo.TEXT, Name: "別の企画",
+		Type: protocolgo.CreateChannelRequestTypeTEXT, Name: "別の企画",
 	}, aliceSession.AccessToken, http.StatusCreated)
 	if textChannel.Position != 0 || voiceChannel.Position != 1 {
 		t.Fatalf("channels must receive stable positions: text=%d voice=%d", textChannel.Position, voiceChannel.Position)
@@ -119,18 +119,18 @@ func TestChatLifecycle(t *testing.T) {
 		"name": "変更不可",
 	}, bobSession.AccessToken, http.StatusForbidden)
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+voiceChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "voiceには送れない",
+		Content: stringPointer("voiceには送れない"),
 	}, bobSession.AccessToken, http.StatusNotFound)
 	otherMessage := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+otherTextChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "別チャンネルのMessage",
+		Content: stringPointer("別チャンネルのMessage"),
 	}, aliceSession.AccessToken, http.StatusCreated)
 	_ = readGatewayMessage(t, gatewayConnection)
 	requestJSON[protocolgo.Error](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "別チャンネルには返信できない", ReplyToMessageId: &otherMessage.Id,
+		Content: stringPointer("別チャンネルには返信できない"), ReplyToMessageId: &otherMessage.Id,
 	}, bobSession.AccessToken, http.StatusNotFound)
 
 	first := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "1つ目",
+		Content: stringPointer("1つ目"),
 	}, bobSession.AccessToken, http.StatusCreated)
 	firstEvent := readGatewayMessage(t, gatewayConnection)
 	if firstEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, firstEvent) != first.Id {
@@ -168,7 +168,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("duplicate removal must be idempotent: %+v", duplicateRemoval)
 	}
 	second := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "2つ目", ReplyToMessageId: &first.Id,
+		Content: stringPointer("2つ目"), ReplyToMessageId: &first.Id,
 	}, bobSession.AccessToken, http.StatusCreated)
 	secondEvent := readGatewayMessage(t, gatewayConnection)
 	if secondEvent.Type != "MESSAGE_CREATE" || gatewayMessageID(t, secondEvent) != second.Id {
@@ -191,7 +191,7 @@ func TestChatLifecycle(t *testing.T) {
 		t.Fatalf("gateway reply was not resolved: %+v", secondEventData)
 	}
 	third := requestJSON[protocolgo.Message](t, server.Client(), http.MethodPost, server.URL+"/api/v1/channels/"+textChannel.Id.String()+"/messages", protocolgo.CreateMessageRequest{
-		Content: "3つ目",
+		Content: stringPointer("3つ目"),
 	}, bobSession.AccessToken, http.StatusCreated)
 	_ = readGatewayMessage(t, gatewayConnection)
 	if first.Author.Id != bob.Id || second.Author.DisplayName != "Bob" {

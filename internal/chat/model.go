@@ -11,11 +11,23 @@ import (
 var (
 	ErrForbidden = errors.New("forbidden")
 	ErrNotFound  = errors.New("resource not found")
+
+	ErrThreadExists = errors.New("a thread already exists for this message")
+
+	ErrStorageUnavailable = errors.New("object storage is not configured")
+	ErrUploadQuota        = errors.New("too many unused attachments")
+	ErrAttachmentInUse    = errors.New("attachment is attached to a message")
+	// ErrAttachmentMismatch means the uploaded Object does not match what was declared.
+	ErrAttachmentMismatch = errors.New("uploaded object does not match the declaration")
 )
 
 const (
 	ChannelTypeText  = "TEXT"
 	ChannelTypeVoice = "VOICE"
+
+	ChannelTypeCategory = "CATEGORY"
+	ChannelTypeThread   = "THREAD"
+	ChannelTypeDirect   = "DIRECT"
 )
 
 type ValidationError struct {
@@ -35,13 +47,32 @@ type Guild struct {
 }
 
 type Channel struct {
-	ID        uuid.UUID
-	GuildID   uuid.UUID
-	Type      string
-	Name      string
-	Topic     *string
-	Position  int
-	CreatedAt time.Time
+	ID         uuid.UUID
+	GuildID    *uuid.UUID
+	Type       string
+	Name       *string
+	Topic      *string
+	ParentID   *uuid.UUID
+	Position   int
+	Recipients []UserSummary
+	CreatedAt  time.Time
+}
+
+// IsText reports whether Messages can be posted to the Channel.
+func (c Channel) IsText() bool {
+	return c.Type == ChannelTypeText || c.Type == ChannelTypeThread || c.Type == ChannelTypeDirect
+}
+
+// channelListRow carries the activity time that orders Thread and Direct Message pages.
+type channelListRow struct {
+	Channel
+	UpdatedAt time.Time
+}
+
+// Audience is the set of Users who can read a Channel.
+type Audience struct {
+	UserIDs []uuid.UUID
+	Direct  bool
 }
 
 type UserSummary struct {
@@ -50,7 +81,36 @@ type UserSummary struct {
 	AvatarURL   *string
 }
 
+const (
+	AttachmentPending = "PENDING"
+	AttachmentReady   = "READY"
+)
+
+type Attachment struct {
+	ID             uuid.UUID
+	ChannelID      uuid.UUID
+	UploaderID     uuid.UUID
+	MessageID      *uuid.UUID
+	Filename       string
+	ContentType    string
+	Size           int64
+	ChecksumSHA256 string
+	Status         string
+	ObjectKey      string
+	CreatedAt      time.Time
+}
+
+type CreateAttachmentInput struct {
+	Filename       string
+	ContentType    string
+	Size           int64
+	ChecksumSHA256 string
+}
+
 type Message struct {
+	// AttachmentIDs are the finalized Attachments to attach when creating the Message.
+	AttachmentIDs    []uuid.UUID
+	Attachments      []Attachment
 	ID               uuid.UUID
 	ChannelID        uuid.UUID
 	Author           UserSummary
@@ -93,15 +153,22 @@ type UpdateGuildInput struct {
 }
 
 type CreateChannelInput struct {
-	Type  string
-	Name  string
-	Topic *string
+	Type     string
+	Name     string
+	Topic    *string
+	ParentID *uuid.UUID
+}
+
+type OptionalUUID struct {
+	Set   bool
+	Value *uuid.UUID
 }
 
 type UpdateChannelInput struct {
 	Name     *string
 	Topic    OptionalString
 	Position *int
+	ParentID OptionalUUID
 }
 
 type Page[T any] struct {
@@ -123,6 +190,11 @@ type pageCursor struct {
 }
 
 type Store interface {
+	MemberStore
+	RoleStore
+	ReadStateStore
+	AttachmentStore
+
 	CreateGuild(ctx context.Context, ownerID uuid.UUID, guild Guild) error
 	ListGuilds(ctx context.Context, userID uuid.UUID, cursor *pageCursor, limit int) ([]guildListRow, error)
 	GetGuild(ctx context.Context, userID, guildID uuid.UUID) (Guild, error)
@@ -130,6 +202,10 @@ type Store interface {
 	DeleteGuild(ctx context.Context, ownerID, guildID uuid.UUID) error
 
 	CreateChannel(ctx context.Context, channel Channel) (Channel, error)
+	CreateThread(ctx context.Context, thread Channel, starterMessageID *uuid.UUID, now time.Time) (Channel, error)
+	ListThreads(ctx context.Context, userID, parentID uuid.UUID, cursor *pageCursor, limit int) ([]channelListRow, error)
+	OpenDirectChannel(ctx context.Context, channel Channel, userID, recipientID uuid.UUID) (Channel, bool, error)
+	ListDirectChannels(ctx context.Context, userID uuid.UUID, cursor *pageCursor, limit int) ([]channelListRow, error)
 	ListChannels(ctx context.Context, userID, guildID uuid.UUID, cursor *pageCursor, limit int) ([]Channel, error)
 	GetChannel(ctx context.Context, userID, channelID uuid.UUID) (Channel, error)
 	UpdateChannel(ctx context.Context, ownerID, channelID uuid.UUID, input UpdateChannelInput, updatedAt time.Time) (Channel, error)
@@ -139,8 +215,130 @@ type Store interface {
 	ListMessages(ctx context.Context, userID, channelID uuid.UUID, cursor *pageCursor, limit int) ([]Message, error)
 	GetMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) (Message, error)
 	UpdateMessage(ctx context.Context, authorID, channelID, messageID uuid.UUID, content string, editedAt time.Time) (Message, error)
-	DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID) error
+	DeleteMessage(ctx context.Context, userID, channelID, messageID uuid.UUID, canManage bool) error
 	AddMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string, createdAt time.Time) (MessageReaction, bool, error)
 	RemoveMessageReaction(ctx context.Context, userID, channelID, messageID uuid.UUID, emoji string) (MessageReaction, bool, error)
-	ListChannelMemberIDs(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error)
+	ChannelAudience(ctx context.Context, channelID uuid.UUID) (Audience, error)
+}
+
+var ErrInviteUnavailable = errors.New("invite is expired or has no remaining uses")
+
+const (
+	PresenceOffline = "OFFLINE"
+
+	cursorMembers = "members"
+)
+
+type Member struct {
+	GuildID  uuid.UUID
+	User     UserSummary
+	Nickname *string
+	RoleIDs  []uuid.UUID
+	JoinedAt time.Time
+	Presence *Presence
+}
+
+type Invite struct {
+	ID        uuid.UUID
+	Code      string
+	Guild     Guild
+	Inviter   UserSummary
+	Uses      int
+	MaxUses   *int
+	ExpiresAt *time.Time
+	CreatedAt time.Time
+}
+
+type CreateInviteInput struct {
+	ExpiresIn *int
+	MaxUses   *int
+}
+
+type UpdateMemberInput struct {
+	Nickname OptionalString
+	RoleIDs  *[]uuid.UUID
+}
+
+// MemberStore persists Guild Members and Invites.
+type MemberStore interface {
+	ListMembers(ctx context.Context, userID, guildID uuid.UUID, cursor *pageCursor, limit int) ([]Member, error)
+	GetMember(ctx context.Context, requesterID, guildID, userID uuid.UUID) (Member, error)
+	UpdateMemberNickname(ctx context.Context, guildID, userID uuid.UUID, nickname *string) (Member, error)
+	GetMemberByID(ctx context.Context, guildID, userID uuid.UUID) (Member, error)
+	RemoveMember(ctx context.Context, guildID, userID uuid.UUID) error
+	ListUserGuildIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	ListGuildMemberIDs(ctx context.Context, guildID uuid.UUID) ([]uuid.UUID, error)
+
+	CreateInvite(ctx context.Context, invite Invite) (Invite, error)
+	ListInvites(ctx context.Context, guildID uuid.UUID, now time.Time) ([]Invite, error)
+	GetInvite(ctx context.Context, code string, now time.Time) (Invite, error)
+	RevokeInvite(ctx context.Context, guildID, inviteID uuid.UUID, revokedAt time.Time) error
+	AcceptInvite(ctx context.Context, code string, userID uuid.UUID, now time.Time) (Member, bool, error)
+}
+
+type Role struct {
+	ID          uuid.UUID
+	GuildID     uuid.UUID
+	Name        string
+	Color       *string
+	Permissions int64
+	Position    int
+	Managed     bool
+	IsDefault   bool
+	CreatedAt   time.Time
+}
+
+type CreateRoleInput struct {
+	Name        string
+	Color       *string
+	Permissions *int64
+}
+
+type UpdateRoleInput struct {
+	Name        *string
+	Color       OptionalString
+	Permissions *int64
+	Position    *int
+}
+
+// RoleStore persists Roles and Role assignments.
+type RoleStore interface {
+	GetAccess(ctx context.Context, guildID, userID uuid.UUID) (Access, error)
+	ListRoles(ctx context.Context, guildID uuid.UUID) ([]Role, error)
+	CreateRole(ctx context.Context, role Role) (Role, error)
+	UpdateRole(ctx context.Context, role Role) (Role, error)
+	DeleteRole(ctx context.Context, guildID, roleID uuid.UUID) error
+	SetMemberRoles(ctx context.Context, guildID, userID uuid.UUID, roleIDs []uuid.UUID) error
+}
+
+type ReadState struct {
+	ChannelID         uuid.UUID
+	LastReadMessageID *uuid.UUID
+	UpdatedAt         time.Time
+}
+
+type SearchInput struct {
+	Query     string
+	ChannelID *uuid.UUID
+	AuthorID  *uuid.UUID
+}
+
+type SearchResult struct {
+	Message Message
+	Excerpt string
+}
+
+// ReadStateStore persists read positions and searches Messages.
+type ReadStateStore interface {
+	UpdateReadState(ctx context.Context, userID, channelID, messageID uuid.UUID, now time.Time) (ReadState, bool, error)
+	ListReadStates(ctx context.Context, userID uuid.UUID) ([]ReadState, error)
+	SearchMessages(ctx context.Context, userID, guildID uuid.UUID, input SearchInput, cursor *pageCursor, limit int) ([]Message, error)
+}
+
+// AttachmentStore persists Attachment metadata. Object bytes live in Object Storage.
+type AttachmentStore interface {
+	CreateAttachment(ctx context.Context, attachment Attachment, maxUnused int) (Attachment, error)
+	GetAttachment(ctx context.Context, userID, attachmentID uuid.UUID) (Attachment, error)
+	MarkAttachmentReady(ctx context.Context, attachmentID uuid.UUID) (Attachment, error)
+	DeleteAttachment(ctx context.Context, userID, attachmentID uuid.UUID) error
 }

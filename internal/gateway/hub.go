@@ -39,6 +39,7 @@ type hub struct {
 	sessionRetention time.Duration
 	eventBufferSize  int
 	now              func() time.Time
+	onUserGone       func(userID uuid.UUID)
 }
 
 func newHub(gatewayURL string, sessionRetention time.Duration, eventBufferSize int) *hub {
@@ -138,7 +139,7 @@ func (h *hub) publishMessage(eventName string, recipients []uuid.UUID, message M
 		}
 		seen[userID] = struct{}{}
 		for _, s := range h.sessionsByUser[userID] {
-			if s.intents&intentGuildMessages == 0 {
+			if s.intents&messageIntent(message.Direct) == 0 {
 				continue
 			}
 			payload := messageEventPayload(message, s.intents&intentMessageContent != 0)
@@ -147,7 +148,14 @@ func (h *hub) publishMessage(eventName string, recipients []uuid.UUID, message M
 	}
 }
 
-func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID) {
+func messageIntent(direct bool) int64 {
+	if direct {
+		return intentDirectMessages
+	}
+	return intentGuildMessages
+}
+
+func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID, direct bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.pruneLocked()
@@ -159,7 +167,7 @@ func (h *hub) publishMessageDelete(recipients []uuid.UUID, messageID, channelID 
 		}
 		seen[userID] = struct{}{}
 		for _, s := range h.sessionsByUser[userID] {
-			if s.intents&intentGuildMessages != 0 {
+			if s.intents&messageIntent(direct) != 0 {
 				h.dispatchLocked(s, eventMessageDelete, messageDeletePayload{ID: messageID, ChannelID: channelID})
 			}
 		}
@@ -215,6 +223,37 @@ func (h *hub) publishTypingStart(recipients []uuid.UUID, typing TypingStart) {
 	}
 }
 
+// publishToIntent dispatches one payload to every Session of the recipients that
+// subscribed to intent.
+func (h *hub) publishToIntent(intent int64, eventName string, recipients []uuid.UUID, payload any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+
+	seen := make(map[uuid.UUID]struct{}, len(recipients))
+	for _, userID := range recipients {
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		for _, s := range h.sessionsByUser[userID] {
+			if s.intents&intent != 0 {
+				h.dispatchLocked(s, eventName, payload)
+			}
+		}
+	}
+}
+
+// publishToUser dispatches one payload to every Session of a User, whatever its intents.
+func (h *hub) publishToUser(userID uuid.UUID, eventName string, payload any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+	for _, s := range h.sessionsByUser[userID] {
+		h.dispatchLocked(s, eventName, payload)
+	}
+}
+
 func (h *hub) dispatchLocked(s *session, eventName string, data any) bool {
 	s.sequence++
 	sequence := s.sequence
@@ -251,5 +290,16 @@ func (h *hub) removeLocked(s *session) {
 	delete(h.sessionsByUser[s.userID], s.id)
 	if len(h.sessionsByUser[s.userID]) == 0 {
 		delete(h.sessionsByUser, s.userID)
+		if h.onUserGone != nil {
+			// Run outside the lock so the callback may publish Events.
+			go h.onUserGone(s.userID)
+		}
 	}
+}
+
+// prune removes Sessions that stayed disconnected past the retention period.
+func (h *hub) prune() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
 }

@@ -179,8 +179,32 @@ func (s *Service) PublishMessageUpdate(recipients []uuid.UUID, message Message) 
 	s.hub.publishMessage(eventMessageUpdate, recipients, message)
 }
 
-func (s *Service) PublishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID) {
-	s.hub.publishMessageDelete(recipients, messageID, channelID)
+func (s *Service) PublishMessageDelete(recipients []uuid.UUID, messageID, channelID uuid.UUID, direct bool) {
+	s.hub.publishMessageDelete(recipients, messageID, channelID, direct)
+}
+
+func (s *Service) PublishChannelCreate(recipients []uuid.UUID, channel Channel) {
+	s.hub.publishToIntent(channelIntent(channel), eventChannelCreate, recipients, channelEventPayload(channel))
+}
+
+func (s *Service) PublishChannelUpdate(recipients []uuid.UUID, channel Channel) {
+	s.hub.publishToIntent(channelIntent(channel), eventChannelUpdate, recipients, channelEventPayload(channel))
+}
+
+func (s *Service) PublishChannelDelete(recipients []uuid.UUID, channelID uuid.UUID, guildID *uuid.UUID) {
+	intent := intentGuilds
+	if guildID == nil {
+		intent = intentDirectMessages
+	}
+	s.hub.publishToIntent(intent, eventChannelDelete, recipients, channelDeletePayload{ID: channelID, GuildID: guildID})
+}
+
+// channelIntent selects GUILDS for Guild Channels and DIRECT_MESSAGES for Direct Messages.
+func channelIntent(channel Channel) int64 {
+	if channel.GuildID == nil {
+		return intentDirectMessages
+	}
+	return intentGuilds
 }
 
 func (s *Service) PublishMessageReaction(recipients []uuid.UUID, add bool, reaction MessageReaction) {
@@ -194,6 +218,45 @@ func (s *Service) PublishMessageReaction(recipients []uuid.UUID, add bool, react
 func (s *Service) PublishTypingStart(recipients []uuid.UUID, typing TypingStart) {
 	s.hub.publishTypingStart(recipients, typing)
 }
+
+func (s *Service) PublishMemberJoin(recipients []uuid.UUID, member Member) {
+	s.hub.publishToIntent(intentGuildMembers, eventMemberJoin, recipients, memberEventPayload(member))
+}
+
+func (s *Service) PublishMemberUpdate(recipients []uuid.UUID, member Member) {
+	s.hub.publishToIntent(intentGuildMembers, eventMemberUpdate, recipients, memberEventPayload(member))
+}
+
+func (s *Service) PublishMemberLeave(recipients []uuid.UUID, guildID, userID uuid.UUID) {
+	s.hub.publishToIntent(intentGuildMembers, eventMemberLeave, recipients, memberLeavePayload{GuildID: guildID, UserID: userID})
+}
+
+func (s *Service) PublishPresenceUpdate(recipients []uuid.UUID, guildID uuid.UUID, presence Presence) {
+	s.hub.publishToIntent(intentGuildPresences, eventPresenceUpdate, recipients, presenceUpdatePayload{GuildID: guildID, Presence: presenceEventPayload(presence)})
+}
+
+// PublishReadStateUpdate tells every Session of userID about its own read position.
+func (s *Service) PublishReadStateUpdate(userID uuid.UUID, state ReadState) {
+	s.hub.publishToUser(userID, eventReadStateUpdate, readStatePayload{
+		ChannelID: state.ChannelID, LastReadMessageID: state.LastReadMessageID, UpdatedAt: state.UpdatedAt,
+	})
+}
+
+func (s *Service) PublishVoiceStateUpdate(recipients []uuid.UUID, state VoiceState) {
+	s.hub.publishToIntent(intentGuildVoiceStates, eventVoiceStateUpdate, recipients, voiceStatePayload(state))
+}
+
+// SetOnUserGone registers a callback for when a User has no Gateway Session left,
+// connected or retained for Resume. Call it before serving connections.
+func (s *Service) SetOnUserGone(callback func(userID uuid.UUID)) {
+	s.hub.mu.Lock()
+	defer s.hub.mu.Unlock()
+	s.hub.onUserGone = callback
+}
+
+// Sweep drops expired disconnected Sessions now instead of on the next Event, which
+// lets SetOnUserGone fire on time. Call it periodically.
+func (s *Service) Sweep() { s.hub.prune() }
 
 func (s *Service) readInbound(client *client) (inboundMessage, bool) {
 	messageType, payload, err := client.connection.ReadMessage()

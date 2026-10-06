@@ -16,15 +16,29 @@ const (
 	opHello          = 10
 	opHeartbeatAck   = 11
 
-	intentGuildMessages  int64 = 1 << 2
-	intentMessageContent int64 = 1 << 4
-	intentReactions      int64 = 1 << 7
-	intentTyping         int64 = 1 << 9
+	intentGuildMembers     int64 = 1 << 1
+	intentGuilds           int64 = 1 << 0
+	intentGuildMessages    int64 = 1 << 2
+	intentDirectMessages   int64 = 1 << 3
+	intentGuildVoiceStates int64 = 1 << 5
+	intentGuildPresences   int64 = 1 << 6
+	intentMessageContent   int64 = 1 << 4
+	intentReactions        int64 = 1 << 7
+	intentTyping           int64 = 1 << 9
 )
 
 const (
 	eventReady                 = "READY"
 	eventResumed               = "RESUMED"
+	eventChannelCreate         = "CHANNEL_CREATE"
+	eventChannelUpdate         = "CHANNEL_UPDATE"
+	eventChannelDelete         = "CHANNEL_DELETE"
+	eventReadStateUpdate       = "READ_STATE_UPDATE"
+	eventVoiceStateUpdate      = "VOICE_STATE_UPDATE"
+	eventMemberJoin            = "MEMBER_JOIN"
+	eventMemberUpdate          = "MEMBER_UPDATE"
+	eventMemberLeave           = "MEMBER_LEAVE"
+	eventPresenceUpdate        = "PRESENCE_UPDATE"
 	eventMessageCreate         = "MESSAGE_CREATE"
 	eventMessageUpdate         = "MESSAGE_UPDATE"
 	eventMessageDelete         = "MESSAGE_DELETE"
@@ -57,6 +71,9 @@ type gatewayMessage struct {
 }
 
 type Message struct {
+	// Direct selects the DIRECT_MESSAGES intent instead of GUILD_MESSAGES.
+	Direct           bool
+	Attachments      []Attachment
 	ID               uuid.UUID
 	ChannelID        uuid.UUID
 	Author           UserSummary
@@ -90,6 +107,24 @@ type TypingStart struct {
 	StartedAt time.Time
 }
 
+// Member is a Guild Member as delivered by MEMBER_JOIN and MEMBER_UPDATE.
+type Member struct {
+	GuildID  uuid.UUID
+	User     UserSummary
+	Nickname *string
+	RoleIDs  []uuid.UUID
+	JoinedAt time.Time
+	Presence *Presence
+}
+
+// Presence is a Member's short-lived public status.
+type Presence struct {
+	UserID     uuid.UUID
+	Status     string
+	CustomText *string
+	UpdatedAt  time.Time
+}
+
 type UserSummary struct {
 	ID          uuid.UUID
 	DisplayName string
@@ -103,6 +138,7 @@ type messagePayload struct {
 	Content          *string              `json:"content"`
 	ReplyToMessageID *uuid.UUID           `json:"reply_to_message_id"`
 	ReplyTo          *messageReplyPayload `json:"reply_to"`
+	Attachments      []attachmentPayload  `json:"attachments"`
 	CreatedAt        time.Time            `json:"created_at"`
 	EditedAt         *time.Time           `json:"edited_at"`
 }
@@ -149,7 +185,7 @@ func messageEventPayload(message Message, includeContent bool) messagePayload {
 	payload := messagePayload{
 		ID: message.ID, ChannelID: message.ChannelID,
 		Author:  userPayload{ID: message.Author.ID, DisplayName: message.Author.DisplayName, AvatarURL: message.Author.AvatarURL},
-		Content: content, ReplyToMessageID: message.ReplyToMessageID,
+		Content: content, ReplyToMessageID: message.ReplyToMessageID, Attachments: attachmentEventPayloads(message.Attachments),
 		CreatedAt: message.CreatedAt, EditedAt: message.EditedAt,
 	}
 	if message.ReplyTo != nil {
@@ -166,4 +202,167 @@ func messageEventPayload(message Message, includeContent bool) messagePayload {
 		}
 	}
 	return payload
+}
+
+type memberPayload struct {
+	GuildID  uuid.UUID       `json:"guild_id"`
+	User     userPayload     `json:"user"`
+	Nickname *string         `json:"nickname"`
+	RoleIDs  []uuid.UUID     `json:"role_ids"`
+	JoinedAt time.Time       `json:"joined_at"`
+	Presence presencePayload `json:"presence"`
+}
+
+type presencePayload struct {
+	UserID     uuid.UUID `json:"user_id"`
+	Status     string    `json:"status"`
+	CustomText *string   `json:"custom_text"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type memberLeavePayload struct {
+	GuildID uuid.UUID `json:"guild_id"`
+	UserID  uuid.UUID `json:"user_id"`
+}
+
+func presenceEventPayload(presence Presence) presencePayload {
+	return presencePayload{UserID: presence.UserID, Status: presence.Status, CustomText: presence.CustomText, UpdatedAt: presence.UpdatedAt}
+}
+
+type presenceUpdatePayload struct {
+	GuildID  uuid.UUID       `json:"guild_id"`
+	Presence presencePayload `json:"presence"`
+}
+
+func memberEventPayload(member Member) memberPayload {
+	payload := memberPayload{
+		GuildID:  member.GuildID,
+		User:     userPayload{ID: member.User.ID, DisplayName: member.User.DisplayName, AvatarURL: member.User.AvatarURL},
+		Nickname: member.Nickname, RoleIDs: nonNilIDs(member.RoleIDs), JoinedAt: member.JoinedAt,
+		// Presence is not tracked yet, so every Member is reported as offline.
+		Presence: presencePayload{UserID: member.User.ID, Status: "OFFLINE", UpdatedAt: member.JoinedAt},
+	}
+	if member.Presence != nil {
+		payload.Presence = presenceEventPayload(*member.Presence)
+	}
+	return payload
+}
+
+func nonNilIDs(ids []uuid.UUID) []uuid.UUID {
+	if ids == nil {
+		return []uuid.UUID{}
+	}
+	return ids
+}
+
+// Channel is a Channel as delivered by CHANNEL_CREATE and CHANNEL_UPDATE.
+type Channel struct {
+	ID         uuid.UUID
+	GuildID    *uuid.UUID
+	ParentID   *uuid.UUID
+	Type       string
+	Name       *string
+	Topic      *string
+	Position   int
+	CreatedAt  time.Time
+	Recipients []UserSummary
+}
+
+type channelPayload struct {
+	ID         uuid.UUID     `json:"id"`
+	GuildID    *uuid.UUID    `json:"guild_id"`
+	ParentID   *uuid.UUID    `json:"parent_id"`
+	Type       string        `json:"type"`
+	Name       *string       `json:"name"`
+	Topic      *string       `json:"topic"`
+	Position   int           `json:"position"`
+	CreatedAt  time.Time     `json:"created_at"`
+	Recipients []userPayload `json:"recipients"`
+}
+
+type channelDeletePayload struct {
+	ID      uuid.UUID  `json:"id"`
+	GuildID *uuid.UUID `json:"guild_id"`
+}
+
+func channelEventPayload(channel Channel) channelPayload {
+	recipients := make([]userPayload, len(channel.Recipients))
+	for index, recipient := range channel.Recipients {
+		recipients[index] = userPayload{ID: recipient.ID, DisplayName: recipient.DisplayName, AvatarURL: recipient.AvatarURL}
+	}
+	return channelPayload{
+		ID: channel.ID, GuildID: channel.GuildID, ParentID: channel.ParentID, Type: channel.Type, Name: channel.Name,
+		Topic: channel.Topic, Position: channel.Position, CreatedAt: channel.CreatedAt, Recipients: recipients,
+	}
+}
+
+// ReadState is a User's read position in one Channel.
+type ReadState struct {
+	ChannelID         uuid.UUID
+	LastReadMessageID *uuid.UUID
+	UpdatedAt         time.Time
+}
+
+type readStatePayload struct {
+	ChannelID         uuid.UUID  `json:"channel_id"`
+	LastReadMessageID *uuid.UUID `json:"last_read_message_id"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+// Attachment is a finalized file on a Message.
+type Attachment struct {
+	ID             uuid.UUID
+	UploaderID     uuid.UUID
+	ChannelID      uuid.UUID
+	Filename       string
+	ContentType    string
+	Size           int64
+	ChecksumSHA256 string
+	Status         string
+	DownloadURL    string
+	CreatedAt      time.Time
+}
+
+type attachmentPayload struct {
+	ID             uuid.UUID `json:"id"`
+	UploaderID     uuid.UUID `json:"uploader_id"`
+	ChannelID      uuid.UUID `json:"channel_id"`
+	Filename       string    `json:"filename"`
+	ContentType    string    `json:"content_type"`
+	Size           int64     `json:"size"`
+	ChecksumSHA256 string    `json:"checksum_sha256"`
+	Status         string    `json:"status"`
+	DownloadURL    string    `json:"download_url"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func attachmentEventPayloads(attachments []Attachment) []attachmentPayload {
+	payloads := make([]attachmentPayload, len(attachments))
+	for index, attachment := range attachments {
+		payloads[index] = attachmentPayload(attachment)
+	}
+	return payloads
+}
+
+// VoiceState is a User's public Voice state. ChannelID and SessionID are nil after leaving.
+type VoiceState struct {
+	UserID     uuid.UUID
+	ChannelID  *uuid.UUID
+	SessionID  *uuid.UUID
+	SelfMute   bool
+	SelfDeaf   bool
+	SelfVideo  bool
+	SelfStream bool
+	UpdatedAt  time.Time
+}
+
+type voiceStatePayload struct {
+	UserID     uuid.UUID  `json:"user_id"`
+	ChannelID  *uuid.UUID `json:"channel_id"`
+	SessionID  *uuid.UUID `json:"session_id"`
+	SelfMute   bool       `json:"self_mute"`
+	SelfDeaf   bool       `json:"self_deaf"`
+	SelfVideo  bool       `json:"self_video"`
+	SelfStream bool       `json:"self_stream"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }

@@ -15,7 +15,10 @@ import (
 	"github.com/grampr/aster-server/internal/config"
 	"github.com/grampr/aster-server/internal/gateway"
 	"github.com/grampr/aster-server/internal/httpapi"
+	"github.com/grampr/aster-server/internal/mail"
+	"github.com/grampr/aster-server/internal/media"
 	postgresplatform "github.com/grampr/aster-server/internal/platform/postgres"
+	"github.com/grampr/aster-server/internal/voice"
 	"github.com/grampr/aster-server/migrations"
 )
 
@@ -62,9 +65,47 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	chatService, err := chat.NewService(chat.NewPostgresStore(pool))
+	if config.Google.Enabled() {
+		googleClient, err := auth.NewGoogleClient(auth.GoogleConfig{
+			ClientID: config.Google.ClientID, ClientSecret: config.Google.ClientSecret, RedirectURL: config.Google.RedirectURL,
+		})
+		if err != nil {
+			return err
+		}
+		authService.WithGoogle(googleClient)
+	} else {
+		logger.Warn("ASTER_GOOGLE_CLIENT_ID is not set; Google login is disabled")
+	}
+	if config.SMTP.Enabled() {
+		mailer, err := mail.NewSMTPMailer(mail.SMTPConfig{
+			Addr: config.SMTP.Addr, Username: config.SMTP.Username, Password: config.SMTP.Password,
+			From: config.SMTP.From, TLS: mail.TLSMode(config.SMTP.TLS),
+		})
+		if err != nil {
+			return err
+		}
+		authService.WithMailer(mailer, logger)
+	} else {
+		logger.Warn("ASTER_SMTP_ADDR is not set; email verification and password reset are disabled")
+	}
+	chatStore := chat.NewPostgresStore(pool)
+	chatService, err := chat.NewService(chatStore)
 	if err != nil {
 		return err
+	}
+	if config.Storage.Enabled() {
+		storage, err := media.NewS3Storage(media.S3Config{
+			Endpoint: config.Storage.Endpoint, PublicEndpoint: config.Storage.PublicEndpoint, Region: config.Storage.Region,
+			Bucket: config.Storage.Bucket, AccessKey: config.Storage.AccessKey, SecretKey: config.Storage.SecretKey,
+			PathStyle: config.Storage.PathStyle,
+		})
+		if err != nil {
+			return err
+		}
+		chatService.WithStorage(storage)
+		go media.NewJanitor(chatStore, storage, logger).Run(rootContext, time.Minute)
+	} else {
+		logger.Warn("ASTER_STORAGE_ENDPOINT is not set; attachments are disabled")
 	}
 	gatewayService, err := gateway.New(authService, gateway.Config{
 		URL: config.GatewayURL, HeartbeatInterval: config.GatewayHeartbeat,
@@ -75,9 +116,24 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	var voiceProvider voice.Provider
+	if config.Voice.Enabled() {
+		livekit, err := voice.NewLiveKit(voice.LiveKitConfig{
+			URL: config.Voice.URL, APIURL: config.Voice.APIURL, APIKey: config.Voice.APIKey, APISecret: config.Voice.APISecret,
+		})
+		if err != nil {
+			return err
+		}
+		voiceProvider = livekit
+	} else {
+		logger.Warn("ASTER_VOICE_LIVEKIT_URL is not set; voice channels are disabled")
+	}
+	voiceService := voice.New(chatService, voiceProvider, logger)
+	go sweepGateway(rootContext, gatewayService)
+
 	httpServer := &http.Server{
 		Addr:              config.HTTPAddress,
-		Handler:           httpapi.New(authService, chatService, gatewayService, logger, version),
+		Handler:           httpapi.New(authService, chatService, gatewayService, logger, version, httpapi.WithVoice(voiceService), httpapi.WithCORS(config.CORSAllowedOrigins)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -108,4 +164,19 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// sweepGateway drops expired disconnected Gateway Sessions so that Presence and Voice
+// state are cleaned up soon after a User goes away.
+func sweepGateway(ctx context.Context, gatewayService *gateway.Service) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			gatewayService.Sweep()
+		}
+	}
 }

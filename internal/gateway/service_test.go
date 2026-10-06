@@ -190,6 +190,103 @@ func TestGatewayPublishesTypingWithTypingIntent(t *testing.T) {
 	}
 }
 
+func TestGatewayPublishesMemberEventsOnlyWithGuildMembersIntent(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	otherID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b091")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{
+		"member-token": {ID: userID}, "plain-token": {ID: otherID},
+	}})
+	server := httptest.NewServer(service)
+	defer server.Close()
+	identify := func(token string, intents int64) *websocket.Conn {
+		connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+		assertOpcode(t, readGateway(t, connection), opHello)
+		writeGateway(t, connection, map[string]any{"op": opIdentify, "d": map[string]any{"token": token, "intents": intents}})
+		assertDispatch(t, readGateway(t, connection), eventReady, 0)
+		return connection
+	}
+	subscribed := identify("member-token", intentGuildMembers)
+	defer subscribed.Close()
+	unsubscribed := identify("plain-token", intentGuildMessages)
+	defer unsubscribed.Close()
+
+	guildID := uuid.MustParse("0198b8f0-2d6e-7c45-9a3f-92e3f2f3c1a0")
+	nickname := "アリス"
+	joinedAt := time.Date(2026, time.August, 17, 6, 0, 0, 0, time.UTC)
+	member := Member{GuildID: guildID, User: UserSummary{ID: userID, DisplayName: "Alice"}, Nickname: &nickname, JoinedAt: joinedAt}
+	recipients := []uuid.UUID{userID, otherID}
+	service.PublishMemberJoin(recipients, member)
+	service.PublishMemberUpdate(recipients, member)
+	service.PublishMemberLeave(recipients, guildID, userID)
+
+	join := readGateway(t, subscribed)
+	assertDispatch(t, join, eventMemberJoin, 1)
+	var payload memberPayload
+	if err := json.Unmarshal(join.D, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.GuildID != guildID || payload.User.ID != userID || payload.Nickname == nil || *payload.Nickname != nickname ||
+		payload.RoleIDs == nil || payload.Presence.Status != "OFFLINE" || !payload.JoinedAt.Equal(joinedAt) {
+		t.Fatalf("unexpected member payload: %+v", payload)
+	}
+	assertDispatch(t, readGateway(t, subscribed), eventMemberUpdate, 2)
+	leave := readGateway(t, subscribed)
+	assertDispatch(t, leave, eventMemberLeave, 3)
+	var left memberLeavePayload
+	if err := json.Unmarshal(leave.D, &left); err != nil {
+		t.Fatal(err)
+	}
+	if left.GuildID != guildID || left.UserID != userID {
+		t.Fatalf("unexpected leave payload: %+v", left)
+	}
+
+	// A Session without the GUILD_MEMBERS intent receives none of them; the next event it gets is its own.
+	service.PublishMessageCreate([]uuid.UUID{otherID}, testMessage())
+	assertDispatch(t, readGateway(t, unsubscribed), eventMessageCreate, 1)
+}
+
+func TestGatewayReportsUsersWithNoSessionLeft(t *testing.T) {
+	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
+	service := newTestService(t, fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}})
+	service.hub.sessionRetention = 20 * time.Millisecond
+	gone := make(chan uuid.UUID, 4)
+	service.SetOnUserGone(func(id uuid.UUID) { gone <- id })
+	server := httptest.NewServer(service)
+	defer server.Close()
+
+	connection := dialGateway(t, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	assertOpcode(t, readGateway(t, connection), opHello)
+	writeGateway(t, connection, map[string]any{"op": opIdentify, "d": map[string]any{"token": "access-token", "intents": 0}})
+	assertDispatch(t, readGateway(t, connection), eventReady, 0)
+
+	// While the Session can still be resumed the User is not gone.
+	service.Sweep()
+	select {
+	case id := <-gone:
+		t.Fatalf("a connected user must not be reported gone: %s", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+	connection.Close()
+	waitFor(t, time.Second, func() bool {
+		service.hub.mu.Lock()
+		defer service.hub.mu.Unlock()
+		for _, s := range service.hub.sessions {
+			return s.disconnectedAt != nil
+		}
+		return false
+	})
+	time.Sleep(40 * time.Millisecond)
+	service.Sweep()
+	select {
+	case id := <-gone:
+		if id != userID {
+			t.Fatalf("unexpected user: %s", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the user must be reported gone once the retention period passed")
+	}
+}
+
 func TestGatewayClosesWhenAccessTokenIsNoLongerValid(t *testing.T) {
 	userID := uuid.MustParse("0198b8ef-1c5d-7b34-892e-81d2e1e2b090")
 	authenticator := fakeAuthenticator{users: map[string]auth.User{"access-token": {ID: userID}}}
